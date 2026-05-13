@@ -1,7 +1,7 @@
 const axios = require("axios");
 
 const BASE_URL =
-	process.env.AIRTEL_SMS_BASE_URL || "http://iqsms.airtel.in/api/v1";
+	process.env.AIRTEL_SMS_BASE_URL || "https://www.airtel.mw/gateway/v1";
 const CLIENT_ID = process.env.AIRTEL_SMS_CLIENT_ID;
 const USERNAME = process.env.AIRTEL_SMS_USERNAME;
 const PASSWORD = process.env.AIRTEL_SMS_PASSWORD;
@@ -35,7 +35,7 @@ function toSubAccountId(username) {
 async function sendSms({ senderId, destinationAddress, message }) {
 	const payload = {
 		customerId: CLIENT_ID,
-		senderId,
+		headerId: senderId,
 		destinationAddress,
 		message,
 		metaData: {
