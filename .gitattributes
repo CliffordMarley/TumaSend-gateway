@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repository (important for Ubuntu server)
+* text=auto eol=lf
+
+# Force binary files to not be modified
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
