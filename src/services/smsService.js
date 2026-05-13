@@ -1,8 +1,7 @@
 const axios = require("axios");
 const { supabaseAdmin } = require("../config/supabase");
 const airtelService = require("./airtelService");
-
-const SMS_PROVIDER = (process.env.SMS_PROVIDER || "kannel").toLowerCase();
+const { detectNetwork } = require("../utils/numberResolver");
 
 const KANNEL_URL = process.env.KANNEL_HOST || "127.0.0.1";
 const KANNEL_PORT = process.env.KANNEL_PORT || "13013";
@@ -32,146 +31,146 @@ async function queueSMS(batchId, options = {}) {
 	let sentCount = 0;
 	let failedCount = 0;
 
-	// ── Airtel Malawi HTTP provider ──────────────────────────────────────────
-	if (SMS_PROVIDER === "airtel" && !isTest) {
-		const pending = batch.messages.filter(
-			m => m.status === "queued" || m.status === "failed",
-		);
+	// Split pending messages by network — Airtel numbers get HTTP, everything else gets Kannel
+	const pending = batch.messages.filter(
+		m => m.status === "queued" || m.status === "failed",
+	);
 
-		if (pending.length === 0) {
-			// Nothing to do — fall through to batch status update
-		} else {
-			// Mark all as sending
-			await supabaseAdmin
-				.from("messages")
-				.update({ status: "sending", sent_at: new Date().toISOString() })
-				.in(
-					"id",
-					pending.map(m => m.id),
-				);
+	const airtelMessages = pending.filter(
+		m => detectNetwork(m.recipient) === "airtel",
+	);
+	const kannelMessages = pending.filter(
+		m => detectNetwork(m.recipient) !== "airtel",
+	);
 
-			try {
-				const { messageRequestId, incorrectNums, raw } =
-					await airtelService.sendSms({
-						senderId: batch.sender_name,
-						destinationAddress: pending.map(m => m.recipient),
-						message: batch.content,
-					});
+	// ── Airtel Malawi HTTP ─────────────────────────────────────────────────────
+	if (airtelMessages.length > 0 && !isTest) {
+		await supabaseAdmin
+			.from("messages")
+			.update({ status: "sending", sent_at: new Date().toISOString() })
+			.in(
+				"id",
+				airtelMessages.map(m => m.id),
+			);
 
-				const incorrectSet = new Set(incorrectNums);
+		try {
+			const { messageRequestId, incorrectNums, raw } =
+				await airtelService.sendSms({
+					senderId: batch.sender_name,
+					destinationAddress: airtelMessages.map(m => m.recipient),
+					message: batch.content,
+				});
 
-				await Promise.all(
-					pending.map(m => {
-						if (incorrectSet.has(m.recipient)) {
-							failedCount++;
-							return supabaseAdmin
-								.from("messages")
-								.update({
-									status: "failed",
-									failed_at: new Date().toISOString(),
-									error_message: "Rejected by Airtel: invalid number",
-									provider: "airtel",
-									provider_response: { raw },
-								})
-								.eq("id", m.id);
-						} else {
-							sentCount++;
-							return supabaseAdmin
-								.from("messages")
-								.update({
-									status: "sent",
-									provider: "airtel",
-									provider_message_id: messageRequestId,
-									provider_response: { raw },
-								})
-								.eq("id", m.id);
-						}
-					}),
-				);
-			} catch (err) {
-				// Whole request failed — mark all pending messages as failed
-				failedCount = pending.length;
-				const retryBase = new Date().toISOString();
-				await Promise.all(
-					pending.map((m, i) => {
-						const retryCount = (m.retry_count || 0) + 1;
+			const incorrectSet = new Set(incorrectNums);
+
+			await Promise.all(
+				airtelMessages.map(m => {
+					if (incorrectSet.has(m.recipient)) {
+						failedCount++;
 						return supabaseAdmin
 							.from("messages")
 							.update({
 								status: "failed",
-								failed_at: retryBase,
-								error_message: err.message,
-								retry_count: retryCount,
-								next_retry_at:
-									retryCount <= 3
-										? new Date(
-												Date.now() + 60000 * Math.pow(2, retryCount - 1),
-											).toISOString()
-										: null,
+								failed_at: new Date().toISOString(),
+								error_message: "Rejected by Airtel: invalid number",
+								provider: "airtel",
+								provider_response: { raw },
 							})
 							.eq("id", m.id);
-					}),
-				);
-			}
+					} else {
+						sentCount++;
+						return supabaseAdmin
+							.from("messages")
+							.update({
+								status: "sent",
+								provider: "airtel",
+								provider_message_id: messageRequestId,
+								provider_response: { raw },
+							})
+							.eq("id", m.id);
+					}
+				}),
+			);
+		} catch (err) {
+			failedCount += airtelMessages.length;
+			const now = new Date().toISOString();
+			await Promise.all(
+				airtelMessages.map(m => {
+					const retryCount = (m.retry_count || 0) + 1;
+					return supabaseAdmin
+						.from("messages")
+						.update({
+							status: "failed",
+							failed_at: now,
+							error_message: err.message,
+							retry_count: retryCount,
+							next_retry_at:
+								retryCount <= 3
+									? new Date(
+											Date.now() + 60000 * Math.pow(2, retryCount - 1),
+										).toISOString()
+									: null,
+						})
+						.eq("id", m.id);
+				}),
+			);
 		}
+	}
 
-		// ── Kannel SMPP provider (default) ──────────────────────────────────────
-	} else {
-		for (const message of batch.messages) {
-			// Skip messages already past 'queued' state (idempotent re-runs)
-			if (message.status !== "queued" && message.status !== "failed") continue;
+	// ── Kannel SMPP (TNM + all non-Airtel, and all messages in test mode) ─────
+	const kannelTargets = isTest ? pending : kannelMessages;
 
-			try {
-				await supabaseAdmin
-					.from("messages")
-					.update({ status: "sending", sent_at: new Date().toISOString() })
-					.eq("id", message.id);
+	for (const message of kannelTargets) {
+		try {
+			await supabaseAdmin
+				.from("messages")
+				.update({ status: "sending", sent_at: new Date().toISOString() })
+				.eq("id", message.id);
 
-				const response = await axios.get(kannelEndpoint(isTest), {
-					params: {
-						username: KANNEL_USER,
-						password: KANNEL_PASS,
-						to: message.recipient,
-						from: batch.sender_name,
-						text: batch.content,
-						"dlr-mask": 31,
-						"dlr-url": `${process.env.API_BASE_URL || "http://127.0.0.1:3000"}/api/v1/webhooks/kannel/dlr?msg_id=${message.id}&id=%I&status=%d&to=%p&from=%P&time=%t`,
-					},
-				});
+			const response = await axios.get(kannelEndpoint(isTest), {
+				params: {
+					username: KANNEL_USER,
+					password: KANNEL_PASS,
+					to: message.recipient,
+					from: batch.sender_name,
+					text: batch.content,
+					"dlr-mask": 31,
+					"dlr-url": `${process.env.API_BASE_URL || "http://127.0.0.1:3000"}/api/v1/webhooks/kannel/dlr?msg_id=${message.id}&id=%I&status=%d&to=%p&from=%P&time=%t`,
+				},
+			});
 
-				const kannelId = response.data.match(/(\d+)/)?.[1] || null;
+			const kannelId = response.data.match(/(\d+)/)?.[1] || null;
 
-				await supabaseAdmin
-					.from("messages")
-					.update({
-						status: "sent",
-						provider: "kannel",
-						provider_message_id: kannelId,
-						provider_response: { raw: response.data },
-					})
-					.eq("id", message.id);
+			await supabaseAdmin
+				.from("messages")
+				.update({
+					status: "sent",
+					provider: "kannel",
+					provider_message_id: kannelId,
+					provider_response: { raw: response.data },
+				})
+				.eq("id", message.id);
 
-				sentCount++;
-			} catch (err) {
-				const retryCount = (message.retry_count || 0) + 1;
-				await supabaseAdmin
-					.from("messages")
-					.update({
-						status: "failed",
-						failed_at: new Date().toISOString(),
-						error_message: err.message,
-						retry_count: retryCount,
-						next_retry_at:
-							retryCount <= 3
-								? new Date(
-										Date.now() + 60000 * Math.pow(2, retryCount - 1),
-									).toISOString()
-								: null,
-					})
-					.eq("id", message.id);
+			sentCount++;
+		} catch (err) {
+			const retryCount = (message.retry_count || 0) + 1;
+			await supabaseAdmin
+				.from("messages")
+				.update({
+					status: "failed",
+					failed_at: new Date().toISOString(),
+					error_message: err.message,
+					retry_count: retryCount,
+					next_retry_at:
+						retryCount <= 3
+							? new Date(
+									Date.now() + 60000 * Math.pow(2, retryCount - 1),
+								).toISOString()
+							: null,
+				})
+				.eq("id", message.id);
 
-				failedCount++;
-			}
+			failedCount++;
 		}
 	}
 
@@ -228,35 +227,68 @@ async function retryFailedMessages() {
 		const isTest = batch.environment === "test";
 
 		for (const message of msgs) {
+			const useAirtel =
+				detectNetwork(message.recipient) === "airtel" && !isTest;
+
 			try {
 				await supabaseAdmin
 					.from("messages")
 					.update({ status: "sending", sent_at: new Date().toISOString() })
 					.eq("id", message.id);
 
-				const response = await axios.get(kannelEndpoint(isTest), {
-					params: {
-						username: KANNEL_USER,
-						password: KANNEL_PASS,
-						to: message.recipient,
-						from: batch.sender_name,
-						text: batch.content,
-						"dlr-mask": 31,
-						"dlr-url": `${process.env.API_BASE_URL || "http://127.0.0.1:3000"}/api/v1/webhooks/kannel/dlr?msg_id=${message.id}&id=%I&status=%d&to=%p&from=%P&time=%t`,
-					},
-				});
+				if (useAirtel) {
+					const { messageRequestId, incorrectNums, raw } =
+						await airtelService.sendSms({
+							senderId: batch.sender_name,
+							destinationAddress: [message.recipient],
+							message: batch.content,
+						});
 
-				const kannelId = response.data.match(/(\d+)/)?.[1] || null;
+					const rejected = incorrectNums.includes(message.recipient);
+					await supabaseAdmin
+						.from("messages")
+						.update(
+							rejected
+								? {
+										status: "failed",
+										failed_at: new Date().toISOString(),
+										error_message: "Rejected by Airtel: invalid number",
+										provider: "airtel",
+										provider_response: { raw },
+									}
+								: {
+										status: "sent",
+										provider: "airtel",
+										provider_message_id: messageRequestId,
+										provider_response: { raw },
+									},
+						)
+						.eq("id", message.id);
+				} else {
+					const response = await axios.get(kannelEndpoint(isTest), {
+						params: {
+							username: KANNEL_USER,
+							password: KANNEL_PASS,
+							to: message.recipient,
+							from: batch.sender_name,
+							text: batch.content,
+							"dlr-mask": 31,
+							"dlr-url": `${process.env.API_BASE_URL || "http://127.0.0.1:3000"}/api/v1/webhooks/kannel/dlr?msg_id=${message.id}&id=%I&status=%d&to=%p&from=%P&time=%t`,
+						},
+					});
 
-				await supabaseAdmin
-					.from("messages")
-					.update({
-						status: "sent",
-						provider: "kannel",
-						provider_message_id: kannelId,
-						provider_response: { raw: response.data },
-					})
-					.eq("id", message.id);
+					const kannelId = response.data.match(/(\d+)/)?.[1] || null;
+
+					await supabaseAdmin
+						.from("messages")
+						.update({
+							status: "sent",
+							provider: "kannel",
+							provider_message_id: kannelId,
+							provider_response: { raw: response.data },
+						})
+						.eq("id", message.id);
+				}
 			} catch (err) {
 				const retryCount = (message.retry_count || 0) + 1;
 				await supabaseAdmin
