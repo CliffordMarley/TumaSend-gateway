@@ -1,0 +1,27 @@
+# Dependencies — reinstalled inside the image
+node_modules/
+
+# Git
+.git/
+.gitattributes
+.gitignore
+
+# Environment / secrets — never bake into image
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Database migration scripts — not needed at runtime
+*.sql
+
+# Documentation & tooling
+docs/
+supabase/
+ecosystem.config.js
+
+# Kannel — has its own build context (./kannel/)
+kannel.conf
+kannel/
