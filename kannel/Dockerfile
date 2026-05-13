@@ -5,12 +5,8 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends kannel gettext-base \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system kannel \
-    && useradd --system --gid kannel --no-create-home kannel
-
-# Directories Kannel expects to exist
-RUN mkdir -p /var/log/kannel /var/spool/kannel/store /var/spool/kannel/dlr \
-    && chown -R kannel:kannel /var/log/kannel /var/spool/kannel
+    && mkdir -p /var/log/kannel /var/spool/kannel/store /var/spool/kannel/dlr \
+    && chown -R kannel:nogroup /var/log/kannel /var/spool/kannel
 
 COPY kannel.docker.conf /etc/kannel/kannel.conf.template
 COPY entrypoint.sh /entrypoint.sh
