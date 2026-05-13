@@ -1,0 +1,19 @@
+# docker-compose.override.yml — applied automatically in local development.
+# Never deploy this file to production.
+services:
+
+  gateway:
+    environment:
+      NODE_ENV: development
+    # Mount source live so changes reflect without rebuilding
+    volumes:
+      - ./src:/app/src:ro
+    # node --watch is built-in since Node 18 — no nodemon needed in container
+    command: ["node", "--watch", "src/app.js"]
+    ports:
+      - "3000:3000"
+
+  kannel:
+    # Expose admin port locally for debugging (bearerbox status)
+    ports:
+      - "13000:13000"
