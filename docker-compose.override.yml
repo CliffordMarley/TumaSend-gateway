@@ -5,15 +5,29 @@ services:
   gateway:
     environment:
       NODE_ENV: development
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
     # Mount source live so changes reflect without rebuilding
     volumes:
       - ./src:/app/src:ro
     # node --watch is built-in since Node 18 — no nodemon needed in container
-    command: ["node", "--watch", "src/app.js"]
+    command: ["node", "--require", "./src/tracing.js", "--watch", "src/app.js"]
     ports:
       - "3000:3000"
+    depends_on:
+      - jaeger
 
   kannel:
     # Expose admin port locally for debugging (bearerbox status)
     ports:
       - "13000:13000"
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Web UI
+      - "4318:4318"     # OTLP HTTP receiver
+    networks:
+      - internal
