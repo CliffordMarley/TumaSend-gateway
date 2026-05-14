@@ -1,0 +1,63 @@
+services:
+
+  # ── Node.js SMS Gateway ──────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file: .env
+    environment:
+      # These override anything in .env — they are topology facts, not secrets
+      NODE_ENV: production
+      PORT: "3000"
+      KANNEL_HOST: kannel
+      KANNEL_PORT: "13013"
+      KANNEL_SENDSMS_URL: http://kannel:13013/cgi-bin/sendsms
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    depends_on:
+      - kannel
+      - jaeger
+    networks:
+      - internal
+
+  # ── Kannel SMSC Gateway ──────────────────────────────────────────────────────
+  kannel:
+    build:
+      context: ./kannel
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GATEWAY_HOST: gateway
+      GATEWAY_PORT: "3000"
+    volumes:
+      - kannel-logs:/var/log/kannel
+      - kannel-store:/var/spool/kannel
+    # Port 13013 is intentionally NOT published to the host.
+    # Only the gateway container may reach it via the internal network.
+    networks:
+      - internal
+
+  # ── Jaeger (distributed tracing UI) ────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Bound to localhost only — access via SSH tunnel, not exposed to the internet
+      - "127.0.0.1:16686:16686"   # Web UI
+      - "127.0.0.1:4318:4318"     # OTLP HTTP receiver (gateway sends traces here)
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  kannel-logs:
+  kannel-store:

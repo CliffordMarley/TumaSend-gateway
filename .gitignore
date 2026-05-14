@@ -48,4 +48,8 @@ coverage/
 # ── PM2 ───────────────────────────────────────────────────────────────────────
 # ecosystem.config.js is committed — only backups are ignored
 ecosystem.config.js.bak
+
+# ── Deployment ────────────────────────────────────────────────────────────────
+# Tracks the last deployed commit locally — machine-specific, not for VCS
+.last-deploy
 .pm2/
