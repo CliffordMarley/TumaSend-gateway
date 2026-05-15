@@ -1,14 +1,21 @@
-const { Router } = require('express');
-const { supabaseAdmin } = require('../config/supabase');
-const { requireAuth } = require('../middlewares/authMiddleware');
+const { Router } = require("express");
+const { supabaseAdmin } = require("../config/supabase");
+const { requireAuth } = require("../middlewares/authMiddleware");
+const { cacheGet, cacheSet, cacheDel } = require("../utils/cache");
+
+// Cache TTLs
+const PRICING_TTL = 1800; // 30 minutes
+const TIERS_TTL = 1800; // 30 minutes
+const PRICING_KEY = "admin:pricing:all";
+const TIERS_KEY = "admin:tiers:all";
 
 const router = Router();
 
 function requirePlatformAdmin(req, res, next) {
-  if (!req.user?.is_platform_admin) {
-    return res.status(403).json({ error: 'Platform admin access required' });
-  }
-  next();
+	if (!req.user?.is_platform_admin) {
+		return res.status(403).json({ error: "Platform admin access required" });
+	}
+	next();
 }
 
 /**
@@ -56,18 +63,25 @@ function requirePlatformAdmin(req, res, next) {
  *       403:
  *         description: Platform admin access required
  */
-router.get('/pricing', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { data: pricing, error } = await supabaseAdmin
-    .from('platform_pricing')
-    .select('id, channel, unit_label, price_per_unit, currency, is_active, updated_at')
-    .order('channel');
+router.get("/pricing", requireAuth, requirePlatformAdmin, async (req, res) => {
+	// ── Cache hit ──────────────────────────────────────────────────────────
+	const cached = await cacheGet(PRICING_KEY);
+	if (cached) return res.json({ pricing: cached });
 
-  if (error) {
-    console.error('Admin Pricing Error:', error);
-    return res.status(500).json({ error: 'Failed to load pricing' });
-  }
+	const { data: pricing, error } = await supabaseAdmin
+		.from("platform_pricing")
+		.select(
+			"id, channel, unit_label, price_per_unit, currency, is_active, updated_at",
+		)
+		.order("channel");
 
-  return res.json({ pricing });
+	if (error) {
+		console.error("Admin Pricing Error:", error);
+		return res.status(500).json({ error: "Failed to load pricing" });
+	}
+
+	cacheSet(PRICING_KEY, pricing, PRICING_TTL);
+	return res.json({ pricing });
 });
 
 /**
@@ -123,37 +137,51 @@ router.get('/pricing', requireAuth, requirePlatformAdmin, async (req, res) => {
  *       404:
  *         description: Channel not found in pricing table
  */
-router.patch('/pricing/:channel', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { channel } = req.params;
-  const { price_per_unit } = req.body;
-  const user = req.user;
+router.patch(
+	"/pricing/:channel",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { channel } = req.params;
+		const { price_per_unit } = req.body;
+		const user = req.user;
 
-  if (typeof price_per_unit !== 'number' || price_per_unit <= 0) {
-    return res.status(400).json({ error: 'price_per_unit must be a positive number' });
-  }
+		if (typeof price_per_unit !== "number" || price_per_unit <= 0) {
+			return res
+				.status(400)
+				.json({ error: "price_per_unit must be a positive number" });
+		}
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('platform_pricing')
-    .update({ price_per_unit, updated_by: user.id })
-    .eq('channel', channel)
-    .eq('currency', 'MWK')
-    .select()
-    .single();
+		const { data: updated, error } = await supabaseAdmin
+			.from("platform_pricing")
+			.update({ price_per_unit, updated_by: user.id })
+			.eq("channel", channel)
+			.eq("currency", "MWK")
+			.select()
+			.single();
 
-  if (error || !updated) {
-    return res.status(404).json({ error: 'Pricing entry not found for this channel' });
-  }
+		if (error || !updated) {
+			return res
+				.status(404)
+				.json({ error: "Pricing entry not found for this channel" });
+		}
 
-  // Trigger has already fired and updated cached_bundle_price_mwk on all bundle tiers
-  const { data: tiers } = await supabaseAdmin
-    .from('v_tier_pricing')
-    .select('id, name, sms_credits_included, bundle_discount_pct, computed_bundle_price_mwk, cached_bundle_price_mwk')
-    .eq('tier_type', 'bundle')
-    .eq('is_active', true)
-    .order('sort_order');
+		// Invalidate pricing and tiers caches — tiers embed the per-unit price
+		await Promise.all([cacheDel(PRICING_KEY), cacheDel(TIERS_KEY)]);
 
-  return res.json({ pricing: updated, affected_tiers: tiers || [] });
-});
+		// Trigger has already fired and updated cached_bundle_price_mwk on all bundle tiers
+		const { data: tiers } = await supabaseAdmin
+			.from("v_tier_pricing")
+			.select(
+				"id, name, sms_credits_included, bundle_discount_pct, computed_bundle_price_mwk, cached_bundle_price_mwk",
+			)
+			.eq("tier_type", "bundle")
+			.eq("is_active", true)
+			.order("sort_order");
+
+		return res.json({ pricing: updated, affected_tiers: tiers || [] });
+	},
+);
 
 /**
  * @swagger
@@ -170,18 +198,23 @@ router.patch('/pricing/:channel', requireAuth, requirePlatformAdmin, async (req,
  *       200:
  *         description: All tiers with pricing data
  */
-router.get('/tiers', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { data: tiers, error } = await supabaseAdmin
-    .from('v_tier_pricing')
-    .select('*')
-    .order('sort_order');
+router.get("/tiers", requireAuth, requirePlatformAdmin, async (req, res) => {
+	// ── Cache hit ──────────────────────────────────────────────────────────
+	const cached = await cacheGet(TIERS_KEY);
+	if (cached) return res.json({ tiers: cached });
 
-  if (error) {
-    console.error('Admin Tiers Error:', error);
-    return res.status(500).json({ error: 'Failed to load tiers' });
-  }
+	const { data: tiers, error } = await supabaseAdmin
+		.from("v_tier_pricing")
+		.select("*")
+		.order("sort_order");
 
-  return res.json({ tiers });
+	if (error) {
+		console.error("Admin Tiers Error:", error);
+		return res.status(500).json({ error: "Failed to load tiers" });
+	}
+
+	cacheSet(TIERS_KEY, tiers, TIERS_TTL);
+	return res.json({ tiers });
 });
 
 /**
@@ -225,33 +258,49 @@ router.get('/tiers', requireAuth, requirePlatformAdmin, async (req, res) => {
  *       404:
  *         description: Bundle tier not found
  */
-router.patch('/tiers/:id/discount', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { bundle_discount_pct } = req.body;
+router.patch(
+	"/tiers/:id/discount",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
+		const { bundle_discount_pct } = req.body;
 
-  if (typeof bundle_discount_pct !== 'number' || bundle_discount_pct < 0 || bundle_discount_pct >= 100) {
-    return res.status(400).json({ error: 'bundle_discount_pct must be between 0 and 99.99' });
-  }
+		if (
+			typeof bundle_discount_pct !== "number" ||
+			bundle_discount_pct < 0 ||
+			bundle_discount_pct >= 100
+		) {
+			return res
+				.status(400)
+				.json({ error: "bundle_discount_pct must be between 0 and 99.99" });
+		}
 
-  const { error } = await supabaseAdmin
-    .from('subscription_tiers')
-    .update({ bundle_discount_pct })
-    .eq('id', id)
-    .eq('tier_type', 'bundle');
+		const { error } = await supabaseAdmin
+			.from("subscription_tiers")
+			.update({ bundle_discount_pct })
+			.eq("id", id)
+			.eq("tier_type", "bundle");
 
-  if (error) {
-    return res.status(404).json({ error: 'Bundle tier not found' });
-  }
+		if (error) {
+			return res.status(404).json({ error: "Bundle tier not found" });
+		}
 
-  // Return fresh values after trigger has fired
-  const { data: tier } = await supabaseAdmin
-    .from('v_tier_pricing')
-    .select('id, name, sms_credits_included, bundle_discount_pct, computed_bundle_price_mwk, cached_bundle_price_mwk, full_price_mwk')
-    .eq('id', id)
-    .single();
+		// Invalidate tiers cache so updated discount is reflected immediately
+		await cacheDel(TIERS_KEY);
 
-  return res.json({ tier });
-});
+		// Return fresh values after trigger has fired
+		const { data: tier } = await supabaseAdmin
+			.from("v_tier_pricing")
+			.select(
+				"id, name, sms_credits_included, bundle_discount_pct, computed_bundle_price_mwk, cached_bundle_price_mwk, full_price_mwk",
+			)
+			.eq("id", id)
+			.single();
+
+		return res.json({ tier });
+	},
+);
 
 /**
  * @swagger
@@ -306,72 +355,84 @@ router.patch('/tiers/:id/discount', requireAuth, requirePlatformAdmin, async (re
  *       500:
  *         description: Enterprise tier not configured or assignment failed
  */
-router.post('/enterprise', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { tenant_id, notes } = req.body;
-  const user = req.user;
+router.post(
+	"/enterprise",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenant_id, notes } = req.body;
+		const user = req.user;
 
-  if (!tenant_id) {
-    return res.status(400).json({ error: 'tenant_id is required' });
-  }
+		if (!tenant_id) {
+			return res.status(400).json({ error: "tenant_id is required" });
+		}
 
-  try {
-    const { data: tenant, error: tenantError } = await supabaseAdmin
-      .from('tenants')
-      .select('id, subscription_tier_id, status')
-      .eq('id', tenant_id)
-      .single();
+		try {
+			const { data: tenant, error: tenantError } = await supabaseAdmin
+				.from("tenants")
+				.select("id, subscription_tier_id, status")
+				.eq("id", tenant_id)
+				.single();
 
-    if (tenantError || !tenant) {
-      return res.status(404).json({ error: 'Tenant not found' });
-    }
+			if (tenantError || !tenant) {
+				return res.status(404).json({ error: "Tenant not found" });
+			}
 
-    if (tenant.status !== 'active') {
-      return res.status(400).json({ error: 'Tenant is not active' });
-    }
+			if (tenant.status !== "active") {
+				return res.status(400).json({ error: "Tenant is not active" });
+			}
 
-    const { data: enterpriseTier } = await supabaseAdmin
-      .from('subscription_tiers')
-      .select('id')
-      .eq('tier_type', 'enterprise')
-      .eq('is_active', true)
-      .single();
+			const { data: enterpriseTier } = await supabaseAdmin
+				.from("subscription_tiers")
+				.select("id")
+				.eq("tier_type", "enterprise")
+				.eq("is_active", true)
+				.single();
 
-    if (!enterpriseTier) {
-      return res.status(500).json({ error: 'Enterprise tier not configured' });
-    }
+			if (!enterpriseTier) {
+				return res
+					.status(500)
+					.json({ error: "Enterprise tier not configured" });
+			}
 
-    await supabaseAdmin
-      .from('tenants')
-      .update({ subscription_tier_id: enterpriseTier.id })
-      .eq('id', tenant_id);
+			await supabaseAdmin
+				.from("tenants")
+				.update({ subscription_tier_id: enterpriseTier.id })
+				.eq("id", tenant_id);
 
-    const { data: order } = await supabaseAdmin
-      .from('orders')
-      .insert({
-        tenant_id,
-        created_by: user.id,
-        order_type: 'enterprise_assignment',
-        channel: 'sms',
-        tier_id: enterpriseTier.id,
-        status: 'fulfilled',
-        fulfilled_at: new Date().toISOString(),
-        notes,
-        metadata: { previous_tier_id: tenant.subscription_tier_id, assigned_by: user.id }
-      })
-      .select()
-      .single();
+			const { data: order } = await supabaseAdmin
+				.from("orders")
+				.insert({
+					tenant_id,
+					created_by: user.id,
+					order_type: "enterprise_assignment",
+					channel: "sms",
+					tier_id: enterpriseTier.id,
+					status: "fulfilled",
+					fulfilled_at: new Date().toISOString(),
+					notes,
+					metadata: {
+						previous_tier_id: tenant.subscription_tier_id,
+						assigned_by: user.id,
+					},
+				})
+				.select()
+				.single();
 
-    return res.status(201).json({
-      message: 'Tenant successfully assigned to Enterprise plan',
-      tenant_id,
-      order_id: order.id,
-      previous_tier_id: tenant.subscription_tier_id
-    });
-  } catch (error) {
-    console.error('Enterprise Assignment Error:', error);
-    return res.status(500).json({ error: 'Failed to assign enterprise plan' });
-  }
-});
+			return res.status(201).json({
+				message: "Tenant successfully assigned to Enterprise plan",
+				tenant_id,
+				order_id: order.id,
+				previous_tier_id: tenant.subscription_tier_id,
+			});
+		} catch (error) {
+			console.error("Enterprise Assignment Error:", error);
+			return res
+				.status(500)
+				.json({ error: "Failed to assign enterprise plan" });
+		}
+	},
+);
 
 // ─────────────────────────────────────────────────────────────
 // KYC ADMIN ROUTES
@@ -399,12 +460,13 @@ router.post('/enterprise', requireAuth, requirePlatformAdmin, async (req, res) =
  *       200:
  *         description: List of KYC submissions
  */
-router.get('/kyc', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const status = req.query.status || 'submitted';
+router.get("/kyc", requireAuth, requirePlatformAdmin, async (req, res) => {
+	const status = req.query.status || "submitted";
 
-  const { data: tenants, error } = await supabaseAdmin
-    .from('tenants')
-    .select(`
+	const { data: tenants, error } = await supabaseAdmin
+		.from("tenants")
+		.select(
+			`
       id,
       name,
       kyc_status,
@@ -424,16 +486,20 @@ router.get('/kyc', requireAuth, requirePlatformAdmin, async (req, res) => {
         file_size,
         created_at
       )
-    `)
-    .eq('kyc_status', status)
-    .order('kyc_submitted_at', { ascending: true });
+    `,
+		)
+		.eq("kyc_status", status)
+		.order("kyc_submitted_at", { ascending: true });
 
-  if (error) {
-    console.error('Admin KYC list error:', error);
-    return res.status(500).json({ error: 'Failed to load KYC submissions' });
-  }
+	if (error) {
+		console.error("Admin KYC list error:", error);
+		return res.status(500).json({ error: "Failed to load KYC submissions" });
+	}
 
-  return res.json({ submissions: tenants || [], count: (tenants || []).length });
+	return res.json({
+		submissions: tenants || [],
+		count: (tenants || []).length,
+	});
 });
 
 /**
@@ -459,43 +525,55 @@ router.get('/kyc', requireAuth, requirePlatformAdmin, async (req, res) => {
  *       404:
  *         description: Tenant not found
  */
-router.get('/kyc/:tenantId', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { tenantId } = req.params;
+router.get(
+	"/kyc/:tenantId",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenantId } = req.params;
 
-  // Fetch tenant and documents separately to avoid !inner join masking the tenant
-  const [tenantResult, docsResult, membersResult] = await Promise.all([
-    supabaseAdmin
-      .from('tenants')
-      .select('id, name, kyc_status, kyc_submitted_at, kyc_reviewed_at, kyc_rejection_reason, status, created_at')
-      .eq('id', tenantId)
-      .single(),
+		// Fetch tenant and documents separately to avoid !inner join masking the tenant
+		const [tenantResult, docsResult, membersResult] = await Promise.all([
+			supabaseAdmin
+				.from("tenants")
+				.select(
+					"id, name, kyc_status, kyc_submitted_at, kyc_reviewed_at, kyc_rejection_reason, status, created_at",
+				)
+				.eq("id", tenantId)
+				.single(),
 
-    supabaseAdmin
-      .from('kyc_documents')
-      .select('id, document_type, id_type, document_name, file_url, storage_provider, storage_path, status, mime_type, file_size, rejection_reason, created_at, updated_at')
-      .eq('tenant_id', tenantId)
-      .order('created_at', { ascending: true }),
+			supabaseAdmin
+				.from("kyc_documents")
+				.select(
+					"id, document_type, id_type, document_name, file_url, storage_provider, storage_path, status, mime_type, file_size, rejection_reason, created_at, updated_at",
+				)
+				.eq("tenant_id", tenantId)
+				.order("created_at", { ascending: true }),
 
-    supabaseAdmin
-      .from('tenant_members')
-      .select('users!user_id (id, full_name, email)')
-      .eq('tenant_id', tenantId)
-      .eq('is_owner', true)
-  ]);
+			supabaseAdmin
+				.from("tenant_members")
+				.select("users!user_id (id, full_name, email)")
+				.eq("tenant_id", tenantId)
+				.eq("is_owner", true),
+		]);
 
-  if (tenantResult.error || !tenantResult.data) {
-    console.error('Admin KYC detail — tenant lookup error:', tenantResult.error);
-    return res.status(404).json({ error: 'Tenant not found' });
-  }
+		if (tenantResult.error || !tenantResult.data) {
+			console.error(
+				"Admin KYC detail — tenant lookup error:",
+				tenantResult.error,
+			);
+			return res.status(404).json({ error: "Tenant not found" });
+		}
 
-  return res.json({
-    tenant: {
-      ...tenantResult.data,
-      kyc_documents: docsResult.data || [],
-      owner: membersResult.data?.[0]?.users || null
-    }
-  });
-});
+		return res.json({
+			tenant: {
+				...tenantResult.data,
+				kyc_documents: docsResult.data || [],
+				owner: membersResult.data?.[0]?.users || null,
+			},
+		});
+	},
+);
 
 /**
  * @swagger
@@ -538,66 +616,77 @@ router.get('/kyc/:tenantId', requireAuth, requirePlatformAdmin, async (req, res)
  *       404:
  *         description: Tenant not found
  */
-router.post('/kyc/:tenantId/approve', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { tenantId } = req.params;
-  const { notes } = req.body || {};
-  const admin = req.user;
+router.post(
+	"/kyc/:tenantId/approve",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenantId } = req.params;
+		const { notes } = req.body || {};
+		const admin = req.user;
 
-  const { data: tenant, error: tenantError } = await supabaseAdmin
-    .from('tenants')
-    .select('id, name, kyc_status')
-    .eq('id', tenantId)
-    .single();
+		const { data: tenant, error: tenantError } = await supabaseAdmin
+			.from("tenants")
+			.select("id, name, kyc_status")
+			.eq("id", tenantId)
+			.single();
 
-  if (tenantError || !tenant) {
-    return res.status(404).json({ error: 'Tenant not found' });
-  }
+		if (tenantError || !tenant) {
+			return res.status(404).json({ error: "Tenant not found" });
+		}
 
-  if (tenant.kyc_status === 'pending') {
-    return res.status(400).json({ error: 'This business has not submitted any KYC documents yet' });
-  }
+		if (tenant.kyc_status === "pending") {
+			return res
+				.status(400)
+				.json({
+					error: "This business has not submitted any KYC documents yet",
+				});
+		}
 
-  if (tenant.kyc_status === 'approved') {
-    return res.status(400).json({ error: 'KYC is already approved for this business' });
-  }
+		if (tenant.kyc_status === "approved") {
+			return res
+				.status(400)
+				.json({ error: "KYC is already approved for this business" });
+		}
 
-  const now = new Date().toISOString();
+		const now = new Date().toISOString();
 
-  // Approve all pending/submitted documents in one shot
-  await supabaseAdmin
-    .from('kyc_documents')
-    .update({
-      status: 'approved',
-      reviewed_by: admin.id,
-      reviewed_at: now,
-      notes: notes || null
-    })
-    .eq('tenant_id', tenantId)
-    .in('status', ['pending', 'submitted']);
+		// Approve all pending/submitted documents in one shot
+		await supabaseAdmin
+			.from("kyc_documents")
+			.update({
+				status: "approved",
+				reviewed_by: admin.id,
+				reviewed_at: now,
+				notes: notes || null,
+			})
+			.eq("tenant_id", tenantId)
+			.in("status", ["pending", "submitted"]);
 
-  // Mark the tenant as KYC approved
-  const { error: updateError } = await supabaseAdmin
-    .from('tenants')
-    .update({
-      kyc_status: 'approved',
-      kyc_reviewed_at: now,
-      kyc_rejection_reason: null
-    })
-    .eq('id', tenantId);
+		// Mark the tenant as KYC approved
+		const { error: updateError } = await supabaseAdmin
+			.from("tenants")
+			.update({
+				kyc_status: "approved",
+				kyc_reviewed_at: now,
+				kyc_rejection_reason: null,
+			})
+			.eq("id", tenantId);
 
-  if (updateError) {
-    console.error('KYC approve error:', updateError);
-    return res.status(500).json({ error: 'Failed to approve KYC' });
-  }
+		if (updateError) {
+			console.error("KYC approve error:", updateError);
+			return res.status(500).json({ error: "Failed to approve KYC" });
+		}
 
-  return res.json({
-    message: `KYC approved for ${tenant.name}. Business is now verified and fully active.`,
-    tenant_id: tenantId,
-    kyc_status: 'approved',
-    reviewed_by: admin.id,
-    reviewed_at: now
-  });
-});
+		return res.json({
+			message: `KYC approved for ${tenant.name}. Business is now verified and fully active.`,
+			tenant_id: tenantId,
+			kyc_status: "approved",
+			reviewed_by: admin.id,
+			reviewed_at: now,
+		});
+	},
+);
 
 /**
  * @swagger
@@ -644,70 +733,75 @@ router.post('/kyc/:tenantId/approve', requireAuth, requirePlatformAdmin, async (
  *       404:
  *         description: Tenant not found
  */
-router.post('/kyc/:tenantId/reject', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { tenantId } = req.params;
-  const body = req.body || {};
-  const { reason, document_ids } = body;
-  const admin = req.user;
+router.post(
+	"/kyc/:tenantId/reject",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenantId } = req.params;
+		const body = req.body || {};
+		const { reason, document_ids } = body;
+		const admin = req.user;
 
-  if (!reason || reason.trim().length === 0) {
-    return res.status(400).json({ error: 'A rejection reason is required' });
-  }
+		if (!reason || reason.trim().length === 0) {
+			return res.status(400).json({ error: "A rejection reason is required" });
+		}
 
-  const { data: tenant, error: tenantError } = await supabaseAdmin
-    .from('tenants')
-    .select('id, name, kyc_status')
-    .eq('id', tenantId)
-    .single();
+		const { data: tenant, error: tenantError } = await supabaseAdmin
+			.from("tenants")
+			.select("id, name, kyc_status")
+			.eq("id", tenantId)
+			.single();
 
-  if (tenantError || !tenant) {
-    return res.status(404).json({ error: 'Tenant not found' });
-  }
+		if (tenantError || !tenant) {
+			return res.status(404).json({ error: "Tenant not found" });
+		}
 
-  const now = new Date().toISOString();
+		const now = new Date().toISOString();
 
-  // Reject specific documents or all pending ones
-  let docQuery = supabaseAdmin
-    .from('kyc_documents')
-    .update({
-      status: 'rejected',
-      reviewed_by: admin.id,
-      reviewed_at: now,
-      rejection_reason: reason
-    })
-    .eq('tenant_id', tenantId);
+		// Reject specific documents or all pending ones
+		let docQuery = supabaseAdmin
+			.from("kyc_documents")
+			.update({
+				status: "rejected",
+				reviewed_by: admin.id,
+				reviewed_at: now,
+				rejection_reason: reason,
+			})
+			.eq("tenant_id", tenantId);
 
-  if (Array.isArray(document_ids) && document_ids.length > 0) {
-    docQuery = docQuery.in('id', document_ids);
-  } else {
-    docQuery = docQuery.in('status', ['pending', 'submitted']);
-  }
+		if (Array.isArray(document_ids) && document_ids.length > 0) {
+			docQuery = docQuery.in("id", document_ids);
+		} else {
+			docQuery = docQuery.in("status", ["pending", "submitted"]);
+		}
 
-  await docQuery;
+		await docQuery;
 
-  const { error: updateError } = await supabaseAdmin
-    .from('tenants')
-    .update({
-      kyc_status: 'rejected',
-      kyc_reviewed_at: now,
-      kyc_rejection_reason: reason
-    })
-    .eq('id', tenantId);
+		const { error: updateError } = await supabaseAdmin
+			.from("tenants")
+			.update({
+				kyc_status: "rejected",
+				kyc_reviewed_at: now,
+				kyc_rejection_reason: reason,
+			})
+			.eq("id", tenantId);
 
-  if (updateError) {
-    console.error('KYC reject error:', updateError);
-    return res.status(500).json({ error: 'Failed to reject KYC' });
-  }
+		if (updateError) {
+			console.error("KYC reject error:", updateError);
+			return res.status(500).json({ error: "Failed to reject KYC" });
+		}
 
-  return res.json({
-    message: `KYC rejected for ${tenant.name}. Owner has been notified of the reason.`,
-    tenant_id: tenantId,
-    kyc_status: 'rejected',
-    reason,
-    reviewed_by: admin.id,
-    reviewed_at: now
-  });
-});
+		return res.json({
+			message: `KYC rejected for ${tenant.name}. Owner has been notified of the reason.`,
+			tenant_id: tenantId,
+			kyc_status: "rejected",
+			reason,
+			reviewed_by: admin.id,
+			reviewed_at: now,
+		});
+	},
+);
 
 // ─────────────────────────────────────────────────────────────
 // GLOBAL SENDER ID MANAGEMENT
@@ -727,20 +821,29 @@ router.post('/kyc/:tenantId/reject', requireAuth, requirePlatformAdmin, async (r
  *       200:
  *         description: List of global sender IDs
  */
-router.get('/global-sender-ids', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { data: senderIds, error } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, display_name, description, channels, status, is_system, valid_from, valid_until, created_at, updated_at')
-    .eq('is_global', true)
-    .order('sender_id');
+router.get(
+	"/global-sender-ids",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { data: senderIds, error } = await supabaseAdmin
+			.from("sender_ids")
+			.select(
+				"id, sender_id, display_name, description, channels, status, is_system, valid_from, valid_until, created_at, updated_at",
+			)
+			.eq("is_global", true)
+			.order("sender_id");
 
-  if (error) {
-    console.error('Admin global sender IDs error:', error);
-    return res.status(500).json({ error: 'Failed to load global sender IDs' });
-  }
+		if (error) {
+			console.error("Admin global sender IDs error:", error);
+			return res
+				.status(500)
+				.json({ error: "Failed to load global sender IDs" });
+		}
 
-  return res.json({ sender_ids: senderIds || [] });
-});
+		return res.json({ sender_ids: senderIds || [] });
+	},
+);
 
 /**
  * @swagger
@@ -784,50 +887,64 @@ router.get('/global-sender-ids', requireAuth, requirePlatformAdmin, async (req, 
  *       409:
  *         description: Sender ID already exists
  */
-router.post('/global-sender-ids', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const body = req.body || {};
-  const { sender_id, display_name, description, channels } = body;
+router.post(
+	"/global-sender-ids",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const body = req.body || {};
+		const { sender_id, display_name, description, channels } = body;
 
-  if (!sender_id || !display_name) {
-    return res.status(400).json({ error: 'sender_id and display_name are required' });
-  }
+		if (!sender_id || !display_name) {
+			return res
+				.status(400)
+				.json({ error: "sender_id and display_name are required" });
+		}
 
-  const normalized = String(sender_id).toUpperCase().trim();
-  if (!/^[A-Z0-9]{3,11}$/.test(normalized)) {
-    return res.status(400).json({
-      error: 'sender_id must be 3-11 alphanumeric characters',
-      example: 'LETTSCOMM'
-    });
-  }
+		const normalized = String(sender_id).toUpperCase().trim();
+		if (!/^[A-Z0-9]{3,11}$/.test(normalized)) {
+			return res.status(400).json({
+				error: "sender_id must be 3-11 alphanumeric characters",
+				example: "LETTSCOMM",
+			});
+		}
 
-  const { data: newSenderId, error } = await supabaseAdmin
-    .from('sender_ids')
-    .insert({
-      sender_id: normalized,
-      display_name: display_name.trim(),
-      description: description ? description.trim() : null,
-      is_global: true,
-      is_system: false,
-      tenant_id: null,
-      status: 'approved',
-      channels: Array.isArray(channels) && channels.length > 0 ? channels : ['sms'],
-      approved_by: req.user.id,
-      approved_at: new Date().toISOString(),
-      valid_from: new Date().toISOString()
-    })
-    .select()
-    .single();
+		const { data: newSenderId, error } = await supabaseAdmin
+			.from("sender_ids")
+			.insert({
+				sender_id: normalized,
+				display_name: display_name.trim(),
+				description: description ? description.trim() : null,
+				is_global: true,
+				is_system: false,
+				tenant_id: null,
+				status: "approved",
+				channels:
+					Array.isArray(channels) && channels.length > 0 ? channels : ["sms"],
+				approved_by: req.user.id,
+				approved_at: new Date().toISOString(),
+				valid_from: new Date().toISOString(),
+			})
+			.select()
+			.single();
 
-  if (error) {
-    if (error.code === '23505') {
-      return res.status(409).json({ error: `Global sender ID "${normalized}" already exists` });
-    }
-    console.error('Create global sender ID error:', error);
-    return res.status(500).json({ error: 'Failed to create global sender ID' });
-  }
+		if (error) {
+			if (error.code === "23505") {
+				return res
+					.status(409)
+					.json({ error: `Global sender ID "${normalized}" already exists` });
+			}
+			console.error("Create global sender ID error:", error);
+			return res
+				.status(500)
+				.json({ error: "Failed to create global sender ID" });
+		}
 
-  return res.status(201).json({ message: 'Global sender ID created', sender_id: newSenderId });
-});
+		return res
+			.status(201)
+			.json({ message: "Global sender ID created", sender_id: newSenderId });
+	},
+);
 
 /**
  * @swagger
@@ -869,40 +986,51 @@ router.post('/global-sender-ids', requireAuth, requirePlatformAdmin, async (req,
  *       404:
  *         description: Not found
  */
-router.patch('/global-sender-ids/:id', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { id } = req.params;
-  const body = req.body || {};
-  const { display_name, description, status, channels } = body;
+router.patch(
+	"/global-sender-ids/:id",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
+		const body = req.body || {};
+		const { display_name, description, status, channels } = body;
 
-  const allowed_statuses = ['approved', 'suspended'];
-  if (status && !allowed_statuses.includes(status)) {
-    return res.status(400).json({ error: `status must be one of: ${allowed_statuses.join(', ')}` });
-  }
+		const allowed_statuses = ["approved", "suspended"];
+		if (status && !allowed_statuses.includes(status)) {
+			return res
+				.status(400)
+				.json({
+					error: `status must be one of: ${allowed_statuses.join(", ")}`,
+				});
+		}
 
-  const updates = {};
-  if (display_name) updates.display_name = display_name.trim();
-  if (description !== undefined) updates.description = description ? description.trim() : null;
-  if (status) updates.status = status;
-  if (Array.isArray(channels) && channels.length > 0) updates.channels = channels;
+		const updates = {};
+		if (display_name) updates.display_name = display_name.trim();
+		if (description !== undefined)
+			updates.description = description ? description.trim() : null;
+		if (status) updates.status = status;
+		if (Array.isArray(channels) && channels.length > 0)
+			updates.channels = channels;
 
-  if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: 'No valid fields to update' });
-  }
+		if (Object.keys(updates).length === 0) {
+			return res.status(400).json({ error: "No valid fields to update" });
+		}
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('sender_ids')
-    .update(updates)
-    .eq('id', id)
-    .eq('is_global', true)
-    .select()
-    .single();
+		const { data: updated, error } = await supabaseAdmin
+			.from("sender_ids")
+			.update(updates)
+			.eq("id", id)
+			.eq("is_global", true)
+			.select()
+			.single();
 
-  if (error || !updated) {
-    return res.status(404).json({ error: 'Global sender ID not found' });
-  }
+		if (error || !updated) {
+			return res.status(404).json({ error: "Global sender ID not found" });
+		}
 
-  return res.json({ sender_id: updated });
-});
+		return res.json({ sender_id: updated });
+	},
+);
 
 /**
  * @swagger
@@ -925,22 +1053,27 @@ router.patch('/global-sender-ids/:id', requireAuth, requirePlatformAdmin, async 
  *       200:
  *         description: Per-tenant usage breakdown
  */
-router.get('/global-sender-ids/:id/usage', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { id } = req.params;
+router.get(
+	"/global-sender-ids/:id/usage",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
 
-  const { data: usage, error } = await supabaseAdmin
-    .from('v_global_sender_usage')
-    .select('*')
-    .eq('sender_id_id', id)
-    .order('total_messages_sent', { ascending: false });
+		const { data: usage, error } = await supabaseAdmin
+			.from("v_global_sender_usage")
+			.select("*")
+			.eq("sender_id_id", id)
+			.order("total_messages_sent", { ascending: false });
 
-  if (error) {
-    console.error('Global sender usage error:', error);
-    return res.status(500).json({ error: 'Failed to load usage data' });
-  }
+		if (error) {
+			console.error("Global sender usage error:", error);
+			return res.status(500).json({ error: "Failed to load usage data" });
+		}
 
-  return res.json({ usage: usage || [] });
-});
+		return res.json({ usage: usage || [] });
+	},
+);
 
 // ─────────────────────────────────────────────────────────────
 // SENDER ID WHITELIST APPROVAL
@@ -968,12 +1101,17 @@ router.get('/global-sender-ids/:id/usage', requireAuth, requirePlatformAdmin, as
  *       200:
  *         description: List of sender ID requests
  */
-router.get('/sender-ids', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const status = req.query.status || 'pending';
+router.get(
+	"/sender-ids",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const status = req.query.status || "pending";
 
-  let query = supabaseAdmin
-    .from('sender_ids')
-    .select(`
+		let query = supabaseAdmin
+			.from("sender_ids")
+			.select(
+				`
       id,
       sender_id,
       display_name,
@@ -989,23 +1127,30 @@ router.get('/sender-ids', requireAuth, requirePlatformAdmin, async (req, res) =>
         name,
         kyc_status
       )
-    `)
-    .eq('is_global', false)
-    .order('requested_at', { ascending: true });
+    `,
+			)
+			.eq("is_global", false)
+			.order("requested_at", { ascending: true });
 
-  if (status !== 'all') {
-    query = query.eq('status', status);
-  }
+		if (status !== "all") {
+			query = query.eq("status", status);
+		}
 
-  const { data: senderIds, error } = await query;
+		const { data: senderIds, error } = await query;
 
-  if (error) {
-    console.error('Admin sender IDs list error:', error);
-    return res.status(500).json({ error: 'Failed to load sender ID requests' });
-  }
+		if (error) {
+			console.error("Admin sender IDs list error:", error);
+			return res
+				.status(500)
+				.json({ error: "Failed to load sender ID requests" });
+		}
 
-  return res.json({ sender_ids: senderIds || [], count: (senderIds || []).length });
-});
+		return res.json({
+			sender_ids: senderIds || [],
+			count: (senderIds || []).length,
+		});
+	},
+);
 
 /**
  * @swagger
@@ -1029,45 +1174,52 @@ router.get('/sender-ids', requireAuth, requirePlatformAdmin, async (req, res) =>
  *       404:
  *         description: Not found
  */
-router.get('/sender-ids/:id', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const [senderResult, memberResult] = await Promise.all([
-    supabaseAdmin
-      .from('sender_ids')
-      .select(`
+router.get(
+	"/sender-ids/:id",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const [senderResult, memberResult] = await Promise.all([
+			supabaseAdmin
+				.from("sender_ids")
+				.select(
+					`
         id, sender_id, display_name, description, channels, status,
         rejection_reason, review_notes, requested_at, approved_at,
         valid_from, valid_until, created_at, updated_at,
         tenants!tenant_id (id, name, kyc_status, status)
-      `)
-      .eq('id', req.params.id)
-      .eq('is_global', false)
-      .single(),
+      `,
+				)
+				.eq("id", req.params.id)
+				.eq("is_global", false)
+				.single(),
 
-    supabaseAdmin
-      .from('sender_ids')
-      .select('tenant_id')
-      .eq('id', req.params.id)
-      .single()
-  ]);
+			supabaseAdmin
+				.from("sender_ids")
+				.select("tenant_id")
+				.eq("id", req.params.id)
+				.single(),
+		]);
 
-  if (senderResult.error || !senderResult.data) {
-    return res.status(404).json({ error: 'Sender ID request not found' });
-  }
+		if (senderResult.error || !senderResult.data) {
+			return res.status(404).json({ error: "Sender ID request not found" });
+		}
 
-  // Fetch tenant owner separately
-  let owner = null;
-  if (memberResult.data?.tenant_id) {
-    const { data: member } = await supabaseAdmin
-      .from('tenant_members')
-      .select('users!user_id (id, full_name, email)')
-      .eq('tenant_id', memberResult.data.tenant_id)
-      .eq('is_owner', true)
-      .single();
-    owner = member?.users || null;
-  }
+		// Fetch tenant owner separately
+		let owner = null;
+		if (memberResult.data?.tenant_id) {
+			const { data: member } = await supabaseAdmin
+				.from("tenant_members")
+				.select("users!user_id (id, full_name, email)")
+				.eq("tenant_id", memberResult.data.tenant_id)
+				.eq("is_owner", true)
+				.single();
+			owner = member?.users || null;
+		}
 
-  return res.json({ sender_id: { ...senderResult.data, owner } });
-});
+		return res.json({ sender_id: { ...senderResult.data, owner } });
+	},
+);
 
 /**
  * @swagger
@@ -1102,51 +1254,56 @@ router.get('/sender-ids/:id', requireAuth, requirePlatformAdmin, async (req, res
  *       404:
  *         description: Not found
  */
-router.post('/sender-ids/:id/approve', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { notes } = req.body || {};
-  const now = new Date().toISOString();
+router.post(
+	"/sender-ids/:id/approve",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
+		const { notes } = req.body || {};
+		const now = new Date().toISOString();
 
-  const { data: existing, error: fetchError } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, status, tenant_id')
-    .eq('id', id)
-    .eq('is_global', false)
-    .single();
+		const { data: existing, error: fetchError } = await supabaseAdmin
+			.from("sender_ids")
+			.select("id, sender_id, status, tenant_id")
+			.eq("id", id)
+			.eq("is_global", false)
+			.single();
 
-  if (fetchError || !existing) {
-    return res.status(404).json({ error: 'Sender ID request not found' });
-  }
+		if (fetchError || !existing) {
+			return res.status(404).json({ error: "Sender ID request not found" });
+		}
 
-  if (existing.status !== 'pending') {
-    return res.status(400).json({
-      error: `Cannot approve a request with status "${existing.status}". Only pending requests can be approved.`
-    });
-  }
+		if (existing.status !== "pending") {
+			return res.status(400).json({
+				error: `Cannot approve a request with status "${existing.status}". Only pending requests can be approved.`,
+			});
+		}
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('sender_ids')
-    .update({
-      status: 'approved',
-      approved_by: req.user.id,
-      approved_at: now,
-      valid_from: now,
-      review_notes: notes || null
-    })
-    .eq('id', id)
-    .select()
-    .single();
+		const { data: updated, error } = await supabaseAdmin
+			.from("sender_ids")
+			.update({
+				status: "approved",
+				approved_by: req.user.id,
+				approved_at: now,
+				valid_from: now,
+				review_notes: notes || null,
+			})
+			.eq("id", id)
+			.select()
+			.single();
 
-  if (error) {
-    console.error('Sender ID approve error:', error);
-    return res.status(500).json({ error: 'Failed to approve sender ID' });
-  }
+		if (error) {
+			console.error("Sender ID approve error:", error);
+			return res.status(500).json({ error: "Failed to approve sender ID" });
+		}
 
-  return res.json({
-    message: `Sender ID "${existing.sender_id}" approved successfully.`,
-    sender_id: updated
-  });
-});
+		return res.json({
+			message: `Sender ID "${existing.sender_id}" approved successfully.`,
+			sender_id: updated,
+		});
+	},
+);
 
 /**
  * @swagger
@@ -1187,51 +1344,58 @@ router.post('/sender-ids/:id/approve', requireAuth, requirePlatformAdmin, async 
  *       404:
  *         description: Not found
  */
-router.post('/sender-ids/:id/reject', requireAuth, requirePlatformAdmin, async (req, res) => {
-  const { id } = req.params;
-  const body = req.body || {};
-  const { reason, notes } = body;
+router.post(
+	"/sender-ids/:id/reject",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
+		const body = req.body || {};
+		const { reason, notes } = body;
 
-  if (!reason || reason.trim().length === 0) {
-    return res.status(400).json({ error: 'A rejection reason is required' });
-  }
+		if (!reason || reason.trim().length === 0) {
+			return res.status(400).json({ error: "A rejection reason is required" });
+		}
 
-  const { data: existing, error: fetchError } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, status')
-    .eq('id', id)
-    .eq('is_global', false)
-    .single();
+		const { data: existing, error: fetchError } = await supabaseAdmin
+			.from("sender_ids")
+			.select("id, sender_id, status")
+			.eq("id", id)
+			.eq("is_global", false)
+			.single();
 
-  if (fetchError || !existing) {
-    return res.status(404).json({ error: 'Sender ID request not found' });
-  }
+		if (fetchError || !existing) {
+			return res.status(404).json({ error: "Sender ID request not found" });
+		}
 
-  if (existing.status === 'approved') {
-    return res.status(400).json({ error: 'Cannot reject an already approved sender ID' });
-  }
+		if (existing.status === "approved") {
+			return res
+				.status(400)
+				.json({ error: "Cannot reject an already approved sender ID" });
+		}
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('sender_ids')
-    .update({
-      status: 'rejected',
-      rejection_reason: reason.trim(),
-      review_notes: notes ? notes.trim() : null,
-      approved_by: req.user.id
-    })
-    .eq('id', id)
-    .select()
-    .single();
+		const { data: updated, error } = await supabaseAdmin
+			.from("sender_ids")
+			.update({
+				status: "rejected",
+				rejection_reason: reason.trim(),
+				review_notes: notes ? notes.trim() : null,
+				approved_by: req.user.id,
+			})
+			.eq("id", id)
+			.select()
+			.single();
 
-  if (error) {
-    console.error('Sender ID reject error:', error);
-    return res.status(500).json({ error: 'Failed to reject sender ID' });
-  }
+		if (error) {
+			console.error("Sender ID reject error:", error);
+			return res.status(500).json({ error: "Failed to reject sender ID" });
+		}
 
-  return res.json({
-    message: `Sender ID "${existing.sender_id}" rejected.`,
-    sender_id: updated
-  });
-});
+		return res.json({
+			message: `Sender ID "${existing.sender_id}" rejected.`,
+			sender_id: updated,
+		});
+	},
+);
 
 module.exports = router;

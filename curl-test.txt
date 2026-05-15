@@ -1,0 +1,14 @@
+curl --location 'https://www.airtel.mw/gateway/v1/sendDefaultSms' \
+--header 'Content-Type: application/json' \
+--header 'Authorization: Basic ZjZmODMzY2JfZGRlNV80ZWIwXzhlMTFfOTc3ZmMyMjY4NzkzOlJSQUJxUE1CeE0=' \
+--data '{
+    "customerId": "7b1e6936-682a-4f5c-a96d-485953a91e09",
+    "senderId": "TumaSend",
+    "destinationAddress": [
+        "265994791131"
+    ],
+    "message": "SMS From TumaSend",
+    "metaData": {
+        "subAccountId":"f6f833cb-dde5-4eb0-8e11-977fc2268793"
+    }
+}'
