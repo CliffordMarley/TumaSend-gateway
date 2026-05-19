@@ -91,26 +91,103 @@ async function upsertContactsFromRecipients(tenantId, phones, batchId) {
  *               properties:
  *                 success:
  *                   type: boolean
+ *                   example: true
  *                 batch_id:
  *                   type: string
+ *                   format: uuid
+ *                 environment:
+ *                   type: string
+ *                   enum: [live, test]
  *                 total_recipients:
  *                   type: integer
+ *                   example: 2
+ *                 invalid_recipients:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Numbers that failed normalisation (omitted if none)
  *                 sms_credits_remaining:
  *                   type: integer
- *                   description: Remaining credits after deduction (null for Enterprise/postpaid)
+ *                   nullable: true
+ *                   description: Remaining SMS credits after deduction. null for Enterprise/postpaid and test mode.
+ *                   example: 1148
  *                 status:
  *                   type: string
  *                   example: processing
+ *                 test_mode:
+ *                   type: boolean
+ *                   description: Present and true when using a test-environment API key
+ *                 note:
+ *                   type: string
+ *                   description: Human-readable note (only present in test mode)
+ *                   example: No credits deducted — test environment
  *       400:
- *         description: Invalid request (missing fields, no valid recipients)
- *       402:
- *         description: Insufficient SMS credits
- *       403:
- *         description: Sender ID mismatch or insufficient scope
- *       422:
- *         description: Message blocked by content moderation
+ *         description: Missing required fields or no valid Malawi recipients
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: from and message are required
+ *                 invalid_recipients:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Present when all recipients failed normalisation
  *       401:
  *         description: Invalid or missing API key
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       402:
+ *         description: Insufficient SMS credits
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Insufficient SMS credits
+ *                 required:
+ *                   type: integer
+ *                   example: 5
+ *                 available:
+ *                   type: integer
+ *                   example: 2
+ *       403:
+ *         description: Sender ID mismatch or insufficient API key scope
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Sender ID mismatch
+ *                 expected:
+ *                   type: string
+ *                   description: The sender name this API key is bound to
+ *       422:
+ *         description: Message blocked by content moderation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Message blocked by content moderation
+ *                 reason:
+ *                   type: string
+ *                   example: Contains restricted content
  */
 router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req, res) => {
   const { from, recipients, message } = req.body;
@@ -365,17 +442,86 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
  *                   description: Human-readable note (only present in test mode)
  *                   example: No credits deducted — test environment
  *       400:
- *         description: Invalid request — missing fields or no valid Malawi recipients
- *       402:
- *         description: Insufficient WhatsApp credits
+ *         description: Missing required fields or no valid Malawi recipients
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: recipients must be a non-empty array
+ *                 invalid_recipients:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Present when all recipients failed normalisation
  *       401:
  *         description: Invalid or missing API key
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       402:
+ *         description: Insufficient WhatsApp credits
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Insufficient WhatsApp credits
+ *                 required:
+ *                   type: integer
+ *                   example: 3
+ *                 available:
+ *                   type: integer
+ *                   example: 1
  *       403:
  *         description: API key does not have the whatsapp:send scope
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Insufficient scope. Requires whatsapp:send"
  *       422:
  *         description: Message blocked by content moderation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Message blocked by content moderation
+ *                 reason:
+ *                   type: string
+ *                   example: Contains restricted content
  *       503:
- *         description: WhatsApp session not connected for this tenant
+ *         description: WhatsApp session not connected — tenant must connect a number first
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: WhatsApp session not connected
+ *                 hint:
+ *                   type: string
+ *                   example: Connect a WhatsApp number via the dashboard before sending messages
+ *                 session_status:
+ *                   type: string
+ *                   enum: [none, initializing, pending_qr, disconnected, banned]
+ *                   example: disconnected
  */
 router.post('/whatsapp', apiKeyAuth, rateLimit, requireScope('whatsapp:send'), async (req, res) => {
   const { recipients, message } = req.body;
