@@ -97,6 +97,7 @@ const batchRoutes = require("./routes/batchRoutes");
 const balanceRoutes = require("./routes/balanceRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const moderationRoutes = require("./routes/moderationRoutes");
 const senderIdRoutes = require("./routes/senderIdRoutes");
 const apiKeyRoutes = require("./routes/apiKeyRoutes");
 const kannelRoutes = require("./routes/webhooks/kannelRoutes");
@@ -142,6 +143,7 @@ apiRouter.use("/", orderRoutes);
 apiRouter.use("/sender-ids", senderIdRoutes);
 apiRouter.use("/api-keys", apiKeyRoutes);
 apiRouter.use("/admin", adminRoutes);
+apiRouter.use("/admin/moderation", moderationRoutes);
 apiRouter.use("/contacts", contactRoutes);
 apiRouter.use("/campaigns", campaignRoutes);
 
