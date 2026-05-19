@@ -8,7 +8,16 @@
       "Bash(node --check src/services/whatsappService.js)",
       "Bash(node --check src/routes/whatsappSessionRoutes.js)",
       "Bash(node --check src/workers/whatsappWorker.js)",
-      "Bash(node --check src/routes/sendRoutes.js)"
+      "Bash(node --check src/routes/sendRoutes.js)",
+      "Bash(git checkout *)",
+      "Bash(node --check src/services/contentModerationService.js)",
+      "Bash(node --check src/routes/moderationRoutes.js)",
+      "Bash(node --check src/app.js)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --base main --head whatsapp-router --title 'feat: isolated multi-tenant WhatsApp messaging via whatsapp-web.js' --body ' *)",
+      "Bash(gh pr edit 5 --title 'feat: isolated multi-tenant WhatsApp messaging via whatsapp-web.js' --body ' *)"
     ]
   }
 }
