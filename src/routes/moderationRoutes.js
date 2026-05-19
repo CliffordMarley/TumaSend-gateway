@@ -75,6 +75,10 @@ function requirePlatformAdmin(req, res, next) {
  *                       severity:
  *                         type: string
  *                         enum: [block, flag]
+ *                       category:
+ *                         type: string
+ *                         enum: [profanity, hate_speech, fraud, phishing, gambling_marketing, spam, explicit, general]
+ *                         example: fraud
  *                       note:
  *                         type: string
  *                         nullable: true
@@ -89,8 +93,36 @@ function requirePlatformAdmin(req, res, next) {
  *                 total:
  *                   type: integer
  *                   example: 42
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
  *       403:
  *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to load blocklist
  */
 router.get(
 	"/blocklist",
@@ -170,6 +202,13 @@ router.get(
  *                 enum: [block, flag]
  *                 default: block
  *                 description: block — reject message with error; flag — allow but log for review
+ *               category:
+ *                 type: string
+ *                 enum: [profanity, hate_speech, fraud, phishing, gambling_marketing, spam, explicit, general]
+ *                 default: general
+ *                 description: |
+ *                   The moderation category this term belongs to. Used to apply per-tenant exemptions.
+ *                   Tenants can be exempted from entire categories (e.g. gambling_marketing for betting operators).
  *               note:
  *                 type: string
  *                 description: Admin note explaining why this term is blocked
@@ -204,6 +243,10 @@ router.get(
  *                     severity:
  *                       type: string
  *                       enum: [block, flag]
+ *                     category:
+ *                       type: string
+ *                       enum: [profanity, hate_speech, fraud, phishing, gambling_marketing, spam, explicit, general]
+ *                       example: fraud
  *                     note:
  *                       type: string
  *                       nullable: true
@@ -213,7 +256,7 @@ router.get(
  *                       type: string
  *                       format: date-time
  *       400:
- *         description: Missing term or invalid regex
+ *         description: Missing or invalid field (term, term_type, channels, severity, category, or invalid regex)
  *         content:
  *           application/json:
  *             schema:
@@ -222,6 +265,26 @@ router.get(
  *                 error:
  *                   type: string
  *                   example: Invalid regex: Unterminated group
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
  *       409:
  *         description: Term already exists with this type
  *         content:
@@ -232,8 +295,16 @@ router.get(
  *                 error:
  *                   type: string
  *                   example: This term with this type already exists on the blocklist
- *       403:
- *         description: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to add term
  */
 router.post(
 	"/blocklist",
@@ -361,10 +432,13 @@ router.post(
  *                 type: array
  *                 items:
  *                   type: string
+ *                   enum: [sms, whatsapp]
  *               is_active:
  *                 type: boolean
+ *                 description: Set to false to disable without deleting
  *               note:
  *                 type: string
+ *                 nullable: true
  *     responses:
  *       200:
  *         description: Entry updated
@@ -403,7 +477,7 @@ router.post(
  *                       type: string
  *                       format: date-time
  *       400:
- *         description: No valid fields to update
+ *         description: No valid fields to update or invalid field value
  *         content:
  *           application/json:
  *             schema:
@@ -412,6 +486,26 @@ router.post(
  *                 error:
  *                   type: string
  *                   example: No valid fields to update
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
  *       404:
  *         description: Entry not found
  *         content:
@@ -422,8 +516,16 @@ router.post(
  *                 error:
  *                   type: string
  *                   example: Blocklist entry not found
- *       403:
- *         description: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to update entry
  */
 router.patch(
 	"/blocklist/:id",
@@ -503,6 +605,26 @@ router.patch(
  *                 message:
  *                   type: string
  *                   example: Term removed from blocklist
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
  *       404:
  *         description: Entry not found
  *         content:
@@ -513,8 +635,16 @@ router.patch(
  *                 error:
  *                   type: string
  *                   example: Blocklist entry not found
- *       403:
- *         description: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to delete entry
  */
 router.delete(
 	"/blocklist/:id",
@@ -637,6 +767,25 @@ router.delete(
  *                       blocked_at:
  *                         type: string
  *                         format: date-time
+ *                       tenants:
+ *                         type: object
+ *                         nullable: true
+ *                         description: Joined tenant name for display
+ *                         properties:
+ *                           name:
+ *                             type: string
+ *                             example: BetMalawi Ltd
+ *                       api_keys:
+ *                         type: object
+ *                         nullable: true
+ *                         description: Joined API key details (null if key was deleted)
+ *                         properties:
+ *                           name:
+ *                             type: string
+ *                             example: Production key
+ *                           key_prefix:
+ *                             type: string
+ *                             example: ts_live_
  *                 total:
  *                   type: integer
  *                   example: 120
@@ -646,8 +795,36 @@ router.delete(
  *                 offset:
  *                   type: integer
  *                   example: 0
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
  *       403:
  *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to load flagged messages
  */
 router.get("/flagged", requireAuth, requirePlatformAdmin, async (req, res) => {
 	const { reviewed, severity, channel, tenant_id } = req.query;
@@ -750,6 +927,26 @@ router.get("/flagged", requireAuth, requirePlatformAdmin, async (req, res) => {
  *                     review_note:
  *                       type: string
  *                       nullable: true
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
  *       404:
  *         description: Entry not found
  *         content:
@@ -760,8 +957,16 @@ router.get("/flagged", requireAuth, requirePlatformAdmin, async (req, res) => {
  *                 error:
  *                   type: string
  *                   example: Flagged message not found
- *       403:
- *         description: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to mark as reviewed
  */
 router.patch(
 	"/flagged/:id/review",
@@ -852,6 +1057,16 @@ router.patch(
  *                 total:
  *                   type: integer
  *                   example: 3
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
  *       403:
  *         description: Platform admin access required
  *         content:
@@ -862,6 +1077,16 @@ router.patch(
  *                 error:
  *                   type: string
  *                   example: Platform admin access required
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to load exemptions
  */
 router.get(
 	"/exemptions",
@@ -986,8 +1211,8 @@ router.get(
  *                 error:
  *                   type: string
  *                   example: "profanity cannot be exempted — this category is enforced for all tenants"
- *       409:
- *         description: This tenant already has an exemption for this category
+ *       401:
+ *         description: Missing or invalid authentication
  *         content:
  *           application/json:
  *             schema:
@@ -995,7 +1220,7 @@ router.get(
  *               properties:
  *                 error:
  *                   type: string
- *                   example: This tenant already has an exemption for this category
+ *                   example: Unauthorized
  *       403:
  *         description: Platform admin access required
  *         content:
@@ -1006,6 +1231,26 @@ router.get(
  *                 error:
  *                   type: string
  *                   example: Platform admin access required
+ *       409:
+ *         description: This tenant already has an exemption for this category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: This tenant already has an exemption for this category
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to grant exemption
  */
 router.post(
 	"/exemptions",
@@ -1100,8 +1345,8 @@ router.post(
  *                 message:
  *                   type: string
  *                   example: Exemption revoked
- *       404:
- *         description: Exemption not found
+ *       401:
+ *         description: Missing or invalid authentication
  *         content:
  *           application/json:
  *             schema:
@@ -1109,7 +1354,7 @@ router.post(
  *               properties:
  *                 error:
  *                   type: string
- *                   example: Exemption not found
+ *                   example: Unauthorized
  *       403:
  *         description: Platform admin access required
  *         content:
@@ -1120,6 +1365,26 @@ router.post(
  *                 error:
  *                   type: string
  *                   example: Platform admin access required
+ *       404:
+ *         description: Exemption not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Exemption not found
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to revoke exemption
  */
 router.delete(
 	"/exemptions/:id",
