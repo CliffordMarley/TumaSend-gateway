@@ -146,6 +146,7 @@ router.get("/", requireAuth, requireVerifiedTenant, async (req, res) => {
  *                 type: array
  *                 items:
  *                   type: string
+ *                   enum: [sms:send, whatsapp:send, "*"]
  *                 description: Permission scopes (default [sms:send])
  *                 example: ["sms:send"]
  *               environment:
@@ -162,6 +163,8 @@ router.get("/", requireAuth, requireVerifiedTenant, async (req, res) => {
  *       403:
  *         description: KYC not approved
  */
+const VALID_SCOPES = ['sms:send', 'whatsapp:send', '*'];
+
 router.post("/", requireAuth, requireVerifiedTenant, async (req, res) => {
 	const tenantId = req.ownedTenant.tenant_id;
 	const body = req.body || {};
@@ -171,6 +174,16 @@ router.post("/", requireAuth, requireVerifiedTenant, async (req, res) => {
 		return res
 			.status(400)
 			.json({ error: "name and sender_id_id are required" });
+	}
+
+	if (Array.isArray(scopes) && scopes.length > 0) {
+		const invalid = scopes.filter(s => !VALID_SCOPES.includes(s));
+		if (invalid.length > 0) {
+			return res.status(400).json({
+				error: `Invalid scope(s): ${invalid.join(', ')}`,
+				valid_scopes: VALID_SCOPES,
+			});
+		}
 	}
 
 	// Validate sender ID: must be global+approved OR tenant's own approved sender

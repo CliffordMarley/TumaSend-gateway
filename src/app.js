@@ -106,10 +106,15 @@ const campaignRoutes = require("./routes/campaignRoutes");
 const { startSmsWorker } = require("./workers/smsWorker");
 const { startPaychanguWorker } = require("./workers/paychanguWorker");
 const { startCampaignWorker } = require("./workers/campaignWorker");
+const { startWhatsappWorker } = require("./workers/whatsappWorker");
+const whatsappSessionRoutes = require("./routes/whatsappSessionRoutes");
 
-// Send route — only x-api-key required, must be mounted BEFORE apiRouter
-// so the systemKeyAuth middleware on apiRouter never intercepts it
+// Send routes — only x-api-key required, must be mounted BEFORE apiRouter
+// so the systemKeyAuth middleware on apiRouter never intercepts them
 app.use("/api/v1/send", sendRoutes);
+
+// WhatsApp session management (system-key protected, dashboard-facing)
+app.use("/api/v1/whatsapp", systemKeyAuth, whatsappSessionRoutes);
 
 // Mock Kannel endpoint for local development
 if (process.env.NODE_ENV !== "production") {
@@ -161,6 +166,7 @@ app.listen(PORT, () => {
 	startSmsWorker();
 	startPaychanguWorker();
 	startCampaignWorker();
+	startWhatsappWorker();
 });
 
 module.exports = app;
