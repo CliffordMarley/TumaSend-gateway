@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -23,6 +24,7 @@ app.use(
 	}),
 );
 app.use(morgan("dev"));
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Swagger Configuration
 const swaggerOptions = {

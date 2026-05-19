@@ -2,6 +2,13 @@ const { Router } = require("express");
 const { supabaseAdmin } = require("../config/supabase");
 const { requireAuth } = require("../middlewares/authMiddleware");
 const { cacheGet, cacheSet, cacheDel } = require("../utils/cache");
+const {
+  sendKycApprovedEmail,
+  sendKycRejectedEmail,
+  sendSenderIdApprovedEmail,
+  sendSenderIdRejectedEmail,
+  sendEnterpriseAssignedEmail,
+} = require("../services/emailService");
 
 // Cache TTLs
 const PRICING_TTL = 1800; // 30 minutes
@@ -419,6 +426,9 @@ router.post(
 				.select()
 				.single();
 
+			sendEnterpriseAssignedEmail({ tenantId: tenant_id })
+				.catch(err => console.error('[email] enterpriseAssigned:', err.message));
+
 			return res.status(201).json({
 				message: "Tenant successfully assigned to Enterprise plan",
 				tenant_id,
@@ -678,6 +688,9 @@ router.post(
 			return res.status(500).json({ error: "Failed to approve KYC" });
 		}
 
+		sendKycApprovedEmail({ tenantId, tenantName: tenant.name })
+			.catch(err => console.error('[email] kycApproved:', err.message));
+
 		return res.json({
 			message: `KYC approved for ${tenant.name}. Business is now verified and fully active.`,
 			tenant_id: tenantId,
@@ -791,6 +804,9 @@ router.post(
 			console.error("KYC reject error:", updateError);
 			return res.status(500).json({ error: "Failed to reject KYC" });
 		}
+
+		sendKycRejectedEmail({ tenantId, tenantName: tenant.name, reason })
+			.catch(err => console.error('[email] kycRejected:', err.message));
 
 		return res.json({
 			message: `KYC rejected for ${tenant.name}. Owner has been notified of the reason.`,
@@ -1298,6 +1314,9 @@ router.post(
 			return res.status(500).json({ error: "Failed to approve sender ID" });
 		}
 
+		sendSenderIdApprovedEmail({ tenantId: existing.tenant_id, senderId: existing.sender_id })
+			.catch(err => console.error('[email] senderIdApproved:', err.message));
+
 		return res.json({
 			message: `Sender ID "${existing.sender_id}" approved successfully.`,
 			sender_id: updated,
@@ -1359,7 +1378,7 @@ router.post(
 
 		const { data: existing, error: fetchError } = await supabaseAdmin
 			.from("sender_ids")
-			.select("id, sender_id, status")
+			.select("id, sender_id, status, tenant_id")
 			.eq("id", id)
 			.eq("is_global", false)
 			.single();
@@ -1390,6 +1409,9 @@ router.post(
 			console.error("Sender ID reject error:", error);
 			return res.status(500).json({ error: "Failed to reject sender ID" });
 		}
+
+		sendSenderIdRejectedEmail({ tenantId: existing.tenant_id, senderId: existing.sender_id, reason: reason.trim() })
+			.catch(err => console.error('[email] senderIdRejected:', err.message));
 
 		return res.json({
 			message: `Sender ID "${existing.sender_id}" rejected.`,

@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const { requireAuth } = require('../middlewares/authMiddleware');
 const { supabaseAdmin } = require('../config/supabase');
+const { sendKycSubmittedEmail } = require('../services/emailService');
 
 const router = Router();
 
@@ -340,6 +341,9 @@ router.post('/', requireAuth, async (req, res) => {
       .update({ kyc_status: 'submitted', kyc_submitted_at: new Date().toISOString() })
       .eq('id', owned.tenant_id)
       .in('kyc_status', ['pending', 'rejected']);
+
+    sendKycSubmittedEmail({ tenantId: owned.tenant_id, tenantName: owned.tenants.name })
+      .catch(err => console.error('[email] kycSubmitted:', err.message));
   }
 
   return res.status(201).json({
@@ -484,6 +488,9 @@ router.patch('/:documentId', requireAuth, async (req, res) => {
       .update({ kyc_status: 'submitted', kyc_submitted_at: new Date().toISOString() })
       .eq('id', owned.tenant_id)
       .in('kyc_status', ['pending', 'rejected']);
+
+    sendKycSubmittedEmail({ tenantId: owned.tenant_id, tenantName: owned.tenants.name })
+      .catch(err => console.error('[email] kycSubmitted:', err.message));
   }
 
   return res.json({

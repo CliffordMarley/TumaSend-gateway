@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const crypto = require('crypto');
 const { supabaseAdmin } = require('../../config/supabase');
+const { sendPaymentSuccessEmail, sendPaymentFailedEmail } = require('../../services/emailService');
 
 const router = Router();
 
@@ -131,6 +132,9 @@ router.post('/', async (req, res) => {
       log('Order marked failed', { order_id: order.id });
     }
 
+    sendPaymentFailedEmail({ tenantId: transaction.tenant_id, amountMwk: transaction.amount_mwk })
+      .catch(err => console.error('[email] paymentFailed:', err.message));
+
     log('Done — payment failed ✗');
     return res.status(200).send('Webhook processed successfully');
   }
@@ -187,6 +191,19 @@ router.post('/', async (req, res) => {
     } else {
       log('Order fulfilled → SMS credits granted', { order_id: order.id });
     }
+  }
+
+  if (payerEmail) {
+    const creditsGranted = order?.effective_sms_credits || order?.whatsapp_credits_amount || 0;
+    const invoiceNumber = invoice?.invoice_number || null;
+    sendPaymentSuccessEmail({
+      toEmail: payerEmail,
+      toName: payerName || 'Valued Customer',
+      amountMwk: transaction.amount_mwk,
+      creditsGranted,
+      invoiceNumber,
+      channel: order?.channel || 'sms',
+    }).catch(err => console.error('[email] paymentSuccess:', err.message));
   }
 
   log('Done ✓');
