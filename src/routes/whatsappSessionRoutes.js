@@ -44,11 +44,28 @@ function getTenantId(req) {
  *               tenant_id:
  *                 type: string
  *                 format: uuid
+ *                 description: The tenant to connect a WhatsApp number for
  *     responses:
  *       200:
- *         description: Session initialisation started
+ *         description: Session initialisation started — QR code will be ready within a few seconds
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 status:
+ *                   type: string
+ *                   example: initializing
+ *                 message:
+ *                   type: string
+ *                   example: QR code will be available shortly. Poll GET /api/v1/whatsapp/sessions/qr
+ *       400:
+ *         description: Missing tenant_id
  *       409:
- *         description: Session already active
+ *         description: A connected or active session already exists for this tenant
  */
 router.post('/sessions', async (req, res) => {
   const tenantId = getTenantId(req);
@@ -92,9 +109,12 @@ router.post('/sessions', async (req, res) => {
  *   get:
  *     summary: Get WhatsApp QR code
  *     description: |
- *       Returns the current QR code as a base64 PNG data URL.
- *       Returns 404 if no QR is available (not yet generated or session already ready).
- *       Returns 200 with `{ status: "ready" }` if the session is already authenticated.
+ *       Returns the current QR code as a base64 PNG data URL suitable for display in an `<img>` tag.
+ *       Poll this endpoint every 5–10 seconds after calling `POST /sessions`.
+ *
+ *       - Returns `{ qr, expires_in }` when a QR is waiting to be scanned.
+ *       - Returns `{ status: "ready", phone_number, display_name }` once the tenant has scanned and connected.
+ *       - Returns 404 if the QR has not been generated yet or has expired (a new one will be emitted automatically).
  *     tags:
  *       - WhatsApp Sessions
  *     security:
@@ -105,11 +125,39 @@ router.post('/sessions', async (req, res) => {
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
  *     responses:
  *       200:
- *         description: QR code as base64 PNG or session already ready
+ *         description: QR code or session already ready
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: object
+ *                   properties:
+ *                     qr:
+ *                       type: string
+ *                       description: Base64 PNG data URL — use as `<img src="...">` in the dashboard
+ *                       example: "data:image/png;base64,iVBORw0KGgo..."
+ *                     expires_in:
+ *                       type: integer
+ *                       description: Seconds until this QR expires
+ *                       example: 90
+ *                 - type: object
+ *                   properties:
+ *                     status:
+ *                       type: string
+ *                       example: ready
+ *                     phone_number:
+ *                       type: string
+ *                       example: "265991234567"
+ *                     display_name:
+ *                       type: string
+ *                       example: "John Doe"
+ *       400:
+ *         description: Missing tenant_id
  *       404:
- *         description: No QR code available yet
+ *         description: No QR code available yet — retry in a few seconds
  */
 router.get('/sessions/qr', async (req, res) => {
   const tenantId = req.query.tenant_id || req.headers['x-tenant-id'];
@@ -153,6 +201,7 @@ router.get('/sessions/qr', async (req, res) => {
  * /api/v1/whatsapp/sessions:
  *   get:
  *     summary: Get WhatsApp session status
+ *     description: Returns the current session record for the tenant, including connection status and phone number.
  *     tags:
  *       - WhatsApp Sessions
  *     security:
@@ -163,11 +212,43 @@ router.get('/sessions/qr', async (req, res) => {
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
  *     responses:
  *       200:
- *         description: Current session status
+ *         description: Current session details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 session:
+ *                   type: object
+ *                   properties:
+ *                     status:
+ *                       type: string
+ *                       enum: [initializing, pending_qr, ready, disconnected, banned]
+ *                     phone_number:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "265991234567"
+ *                     display_name:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "John Doe"
+ *                     last_connected_at:
+ *                       type: string
+ *                       format: date-time
+ *                       nullable: true
+ *                     created_at:
+ *                       type: string
+ *                       format: date-time
+ *                     updated_at:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Missing tenant_id
  *       404:
- *         description: No session found
+ *         description: No WhatsApp session found for this tenant
  */
 router.get('/sessions', async (req, res) => {
   const tenantId = req.query.tenant_id || req.headers['x-tenant-id'];
@@ -195,7 +276,9 @@ router.get('/sessions', async (req, res) => {
  * /api/v1/whatsapp/sessions:
  *   delete:
  *     summary: Disconnect WhatsApp session
- *     description: Logs out of WhatsApp, destroys the Chromium session, and removes local session files.
+ *     description: |
+ *       Logs out of WhatsApp, destroys the Chromium browser session, and removes local session files.
+ *       The tenant will need to scan a new QR code to reconnect.
  *     tags:
  *       - WhatsApp Sessions
  *     security:
@@ -214,9 +297,20 @@ router.get('/sessions', async (req, res) => {
  *                 format: uuid
  *     responses:
  *       200:
- *         description: Session disconnected
- *       404:
- *         description: No session found
+ *         description: Session disconnected successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: WhatsApp session disconnected
+ *       400:
+ *         description: Missing tenant_id
  */
 router.delete('/sessions', async (req, res) => {
   const tenantId = getTenantId(req);

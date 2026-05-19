@@ -308,24 +308,46 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
  *               properties:
  *                 success:
  *                   type: boolean
+ *                   example: true
  *                 batch_id:
  *                   type: string
+ *                   format: uuid
+ *                 environment:
+ *                   type: string
+ *                   enum: [live, test]
  *                 total_recipients:
  *                   type: integer
+ *                   example: 3
+ *                 invalid_recipients:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Numbers that failed normalisation (omitted if none)
  *                 whatsapp_credits_remaining:
  *                   type: integer
- *                   description: Remaining WhatsApp credits after deduction
+ *                   nullable: true
+ *                   description: Remaining WhatsApp credits after deduction (null in test mode)
+ *                   example: 247
  *                 status:
  *                   type: string
  *                   example: processing
+ *                 test_mode:
+ *                   type: boolean
+ *                   description: Present and true when using a test-environment API key
+ *                 note:
+ *                   type: string
+ *                   description: Human-readable note (only present in test mode)
+ *                   example: No credits deducted — test environment
  *       400:
- *         description: Invalid request (missing fields, no valid recipients)
+ *         description: Invalid request — missing fields or no valid Malawi recipients
  *       402:
  *         description: Insufficient WhatsApp credits
- *       503:
- *         description: WhatsApp session not connected
  *       401:
  *         description: Invalid or missing API key
+ *       403:
+ *         description: API key does not have the whatsapp:send scope
+ *       503:
+ *         description: WhatsApp session not connected for this tenant
  */
 router.post('/whatsapp', apiKeyAuth, rateLimit, requireScope('whatsapp:send'), async (req, res) => {
   const { recipients, message } = req.body;
