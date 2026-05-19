@@ -5,6 +5,7 @@ const { requireAuth } = require('../middlewares/authMiddleware');
 const { supabaseAdmin } = require('../config/supabase');
 
 const { normalizePhone, isValidMalawiPhone } = require('../utils/numberResolver');
+const { sendWelcomeEmail, sendBusinessCreatedEmail } = require('../services/emailService');
 
 const router = Router();
 
@@ -121,6 +122,9 @@ router.post('/register', async (req, res) => {
       await admin.auth().deleteUser(firebaseUid);
       throw userError;
     }
+
+    sendWelcomeEmail({ email: user.email, fullName: user.full_name })
+      .catch(err => console.error('[email] welcome:', err.message));
 
     // 3. Auto-login to get JWT token
     const apiKey = process.env.FIREBASE_WEB_API_KEY;
@@ -428,6 +432,9 @@ router.post('/business', requireAuth, async (req, res) => {
       .single();
     
     if (memberError) throw memberError;
+
+    sendBusinessCreatedEmail({ email: user.email, fullName: user.full_name, businessName: tenant.name, smsBonusCredits: 10, waBonusCredits: 10 })
+      .catch(err => console.error('[email] businessCreated:', err.message));
 
     res.status(201).json({
       message: 'Business created successfully',

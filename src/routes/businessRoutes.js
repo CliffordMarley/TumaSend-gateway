@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const { requireAuth } = require('../middlewares/authMiddleware');
 const { supabaseAdmin } = require('../config/supabase');
+const { sendTeamInviteEmail, sendInvitationAcceptedEmail } = require('../services/emailService');
 
 const router = Router();
 
@@ -420,6 +421,13 @@ router.post('/invite', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to create invitation', details: memberError.message });
   }
 
+  sendTeamInviteEmail({
+    inviteeEmail: invitee.email,
+    inviteeName: invitee.full_name,
+    businessName: owned.tenants?.name || 'the business',
+    role,
+  }).catch(err => console.error('[email] teamInvite:', err.message));
+
   res.status(201).json({
     message: `Invitation sent to ${invitee.full_name} (${invitee.email})`,
     invitation: {
@@ -557,6 +565,12 @@ router.post('/invite/accept', requireAuth, async (req, res) => {
   if (updateError) {
     return res.status(500).json({ error: 'Failed to accept invitation', details: updateError.message });
   }
+
+  sendInvitationAcceptedEmail({
+    tenantId: invite.tenant_id,
+    tenantName: invite.tenants?.name,
+    memberName: req.user.full_name,
+  }).catch(err => console.error('[email] invitationAccepted:', err.message));
 
   res.json({
     message: `Welcome! You have joined ${invite.tenants?.name || 'the business'}.`,
