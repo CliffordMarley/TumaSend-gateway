@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS content_blocklist (
   term_type TEXT NOT NULL DEFAULT 'phrase' CHECK (term_type IN ('word', 'phrase', 'regex')),
   channels TEXT [] NOT NULL DEFAULT ARRAY ['sms','whatsapp'],
   severity TEXT NOT NULL DEFAULT 'block' CHECK (severity IN ('block', 'flag')),
+  category TEXT NOT NULL DEFAULT 'general'
+    CHECK (category IN ('profanity','hate_speech','fraud','phishing','gambling_marketing','spam','explicit','general')),
   note TEXT NULL,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_by UUID NULL REFERENCES users(id),
@@ -18,6 +20,11 @@ CREATE TABLE IF NOT EXISTS content_blocklist (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (term, term_type)
 );
+
+-- Add category to existing installs that ran the migration before this column existed
+ALTER TABLE content_blocklist
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general'
+    CHECK (category IN ('profanity','hate_speech','fraud','phishing','gambling_marketing','spam','explicit','general'));
 
 CREATE INDEX IF NOT EXISTS idx_blocklist_is_active ON content_blocklist(is_active);
 
@@ -78,7 +85,7 @@ CREATE POLICY blocked_messages_service_only ON blocked_messages FOR ALL USING (a
 -- All entries use ON CONFLICT DO NOTHING — safe to re-run.
 -- ============================================================
 INSERT INTO
-  content_blocklist (term, term_type, channels, severity, note)
+  content_blocklist (term, term_type, channels, severity, category, note)
 VALUES
   -- ── Profanity (word — whole-word only, won't flag "skill" for "kill") ──
   (
@@ -86,6 +93,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -93,6 +101,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -100,6 +109,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'profanity',
     'Profanity — flagged only (common in legitimate use)'
   ),
   (
@@ -107,6 +117,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -114,6 +125,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -121,6 +133,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -128,6 +141,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'profanity',
     'Profanity — flagged only'
   ),
   (
@@ -135,6 +149,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -142,6 +157,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity'
   ),
   (
@@ -149,6 +165,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'profanity',
     'Profanity / slur'
   ),
   -- ── Hate speech ──
@@ -157,6 +174,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Racial slur'
   ),
   (
@@ -164,6 +182,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Racial slur'
   ),
   (
@@ -171,6 +190,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Racial slur — Southern Africa'
   ),
   (
@@ -178,6 +198,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Racial slur'
   ),
   (
@@ -185,6 +206,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Racial slur'
   ),
   (
@@ -192,6 +214,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Ableist slur'
   ),
   (
@@ -199,6 +222,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Incitement to violence'
   ),
   (
@@ -206,56 +230,130 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'hate_speech',
     'Incitement to violence'
   ),
-  -- ── Fraud / phishing ──
-  (
-    'free money',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'block',
-    'Fraud indicator'
-  ),
+  -- ── Gambling marketing (exemptable for regulated betting operators) ──
   (
     'win a prize',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
-    'Fraud indicator'
+    'gambling_marketing',
+    'Gambling marketing / fraud indicator'
   ),
   (
     'you have won',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
-    'Lottery scam'
+    'gambling_marketing',
+    'Gambling marketing / lottery scam'
   ),
   (
     'congratulations you',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
-    'Lottery scam indicator'
+    'gambling_marketing',
+    'Gambling marketing / lottery scam indicator'
   ),
   (
     'claim your reward',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
-    'Fraud indicator'
+    'gambling_marketing',
+    'Gambling marketing / fraud indicator'
   ),
   (
     'claim your prize',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'gambling_marketing',
+    'Gambling marketing / fraud indicator'
+  ),
+  -- ── Fraud ──
+  (
+    'free money',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'block',
+    'fraud',
     'Fraud indicator'
   ),
+  (
+    'double your money',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'block',
+    'fraud',
+    'Investment fraud'
+  ),
+  (
+    'make money fast',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'block',
+    'fraud',
+    'Fraud / pyramid scheme'
+  ),
+  (
+    'guaranteed returns',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Investment fraud indicator'
+  ),
+  (
+    'pyramid',
+    'word',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Pyramid scheme indicator'
+  ),
+  (
+    'ponzi',
+    'word',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Ponzi scheme indicator'
+  ),
+  (
+    'instant loan no collateral',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Predatory lending indicator'
+  ),
+  (
+    'quick loan no documents',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Predatory lending indicator'
+  ),
+  (
+    'borrow cash instantly',
+    'phrase',
+    ARRAY ['sms','whatsapp'],
+    'flag',
+    'fraud',
+    'Predatory lending indicator'
+  ),
+  -- ── Phishing ──
   (
     'send your pin',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'PIN phishing'
   ),
   (
@@ -263,6 +361,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'PIN phishing'
   ),
   (
@@ -270,6 +369,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Password phishing'
   ),
   (
@@ -277,6 +377,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'OTP phishing'
   ),
   (
@@ -284,6 +385,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'OTP phishing'
   ),
   (
@@ -291,6 +393,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Phishing'
   ),
   (
@@ -298,6 +401,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Phishing / impersonation'
   ),
   (
@@ -305,6 +409,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Data harvesting indicator'
   ),
   (
@@ -312,6 +417,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Phishing link'
   ),
   (
@@ -319,6 +425,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Spam / urgency tactic'
   ),
   (
@@ -326,6 +433,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Urgency spam'
   ),
   (
@@ -333,6 +441,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Urgency phishing'
   ),
   -- ── Mobile-money scams (Malawi-specific: Airtel Money, TNM Mpamba) ──
@@ -341,6 +450,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Mobile money PIN phishing'
   ),
   (
@@ -348,6 +458,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Mobile money PIN phishing'
   ),
   (
@@ -355,6 +466,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Mobile money scam indicator'
   ),
   (
@@ -362,6 +474,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Mobile money scam indicator'
   ),
   (
@@ -369,6 +482,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Mobile money PIN phishing'
   ),
   (
@@ -376,6 +490,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'Reversal scam'
   ),
   (
@@ -383,6 +498,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Reversal scam indicator'
   ),
   (
@@ -390,6 +506,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Reversal scam indicator'
   ),
   (
@@ -397,29 +514,8 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'phishing',
     'Reversal scam indicator'
-  ),
-  -- ── Loan shark / predatory lending ──
-  (
-    'instant loan no collateral',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Predatory lending indicator'
-  ),
-  (
-    'quick loan no documents',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Predatory lending indicator'
-  ),
-  (
-    'borrow cash instantly',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Predatory lending indicator'
   ),
   -- ── Spam indicators ──
   (
@@ -427,6 +523,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Spam indicator'
   ),
   (
@@ -434,6 +531,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Phishing / spam link'
   ),
   (
@@ -441,6 +539,7 @@ VALUES
     'phrase',
     ARRAY ['sms'],
     'flag',
+    'spam',
     'Bulk unsolicited SMS indicator'
   ),
   (
@@ -448,6 +547,7 @@ VALUES
     'phrase',
     ARRAY ['sms'],
     'flag',
+    'spam',
     'Bulk unsolicited SMS indicator'
   ),
   (
@@ -455,6 +555,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Unsolicited bulk SMS'
   ),
   (
@@ -462,6 +563,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Unsolicited bulk SMS'
   ),
   (
@@ -469,6 +571,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Spam indicator'
   ),
   (
@@ -476,49 +579,16 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Spam indicator'
-  ),
-  (
-    'make money fast',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'block',
-    'Fraud / pyramid scheme'
   ),
   (
     'earn from home',
     'phrase',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Spam / pyramid scheme indicator'
-  ),
-  (
-    'double your money',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'block',
-    'Investment fraud'
-  ),
-  (
-    'guaranteed returns',
-    'phrase',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Investment fraud indicator'
-  ),
-  (
-    'pyramid',
-    'word',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Pyramid scheme indicator'
-  ),
-  (
-    'ponzi',
-    'word',
-    ARRAY ['sms','whatsapp'],
-    'flag',
-    'Ponzi scheme indicator'
   ),
   -- ── Explicit content ──
   (
@@ -526,6 +596,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'explicit',
     'Explicit content'
   ),
   (
@@ -533,6 +604,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'block',
+    'explicit',
     'Explicit content'
   ),
   (
@@ -540,6 +612,7 @@ VALUES
     'word',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'explicit',
     'Explicit content indicator'
   ),
   (
@@ -547,6 +620,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'explicit',
     'Explicit content'
   ),
   (
@@ -554,6 +628,7 @@ VALUES
     'phrase',
     ARRAY ['sms','whatsapp'],
     'block',
+    'explicit',
     'Explicit content / harassment'
   ),
   -- ── Regex patterns ──
@@ -563,6 +638,7 @@ VALUES
     'regex',
     ARRAY ['sms','whatsapp'],
     'flag',
+    'spam',
     'Shortened URL — review for phishing'
   ),
   -- Matches messages asking for any 4-6 digit PIN/OTP code
@@ -571,5 +647,72 @@ VALUES
     'regex',
     ARRAY ['sms','whatsapp'],
     'block',
+    'phishing',
     'PIN/OTP extraction pattern'
   ) ON CONFLICT (term, term_type) DO NOTHING;
+
+-- ── Backfill categories for any rows inserted before this column was added ──
+-- (ON CONFLICT above won't update existing rows, so we backfill by term match)
+UPDATE content_blocklist SET category = 'profanity'
+  WHERE term IN ('fuck','shit','ass','bitch','bastard','cunt','dick','pussy','whore','faggot')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'hate_speech'
+  WHERE term IN ('nigger','nigga','kaffir','chink','wetback','retard','kill all','death to')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'gambling_marketing'
+  WHERE term IN ('win a prize','you have won','congratulations you','claim your reward','claim your prize')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'fraud'
+  WHERE term IN ('free money','double your money','make money fast','guaranteed returns',
+                 'pyramid','ponzi','instant loan no collateral','quick loan no documents','borrow cash instantly')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'phishing'
+  WHERE term IN ('send your pin','share your pin','send your password','confirm your otp','send otp',
+                 'verify your account by replying','your account has been suspended','bank account details',
+                 'click to claim','limited time offer','act now','urgent action required',
+                 'airtel money pin','mpamba pin','send airtel money','send mpamba','mobile money pin',
+                 'reverse transaction','wrong transfer','sent by mistake','refund the money',
+                 '(send|reply|share|give).{0,30}\\b\\d{4,6}\\b')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'spam'
+  WHERE term IN ('buy cheap','click here','unsubscribe','opt out','for more info reply stop',
+                 'reply stop to unsubscribe','100% free','no cost','earn from home',
+                 '^.*(bit\.ly|tinyurl\.com|t\.co).*$')
+    AND category = 'general';
+
+UPDATE content_blocklist SET category = 'explicit'
+  WHERE term IN ('xxx','porn','nude','naked pics','send nudes')
+    AND category = 'general';
+
+-- ============================================================
+-- STEP 4: Per-tenant moderation exemptions
+-- Platform admins grant a tenant an exemption from an entire
+-- category. New terms added to that category are automatically
+-- exempt for already-exempted tenants.
+-- profanity and hate_speech are never exemptable (enforced at
+-- the route layer — not a DB constraint so admins get a clear
+-- 400 error rather than a cryptic CHECK violation).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tenant_moderation_exemptions (
+  id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  tenant_id   UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  category    TEXT        NOT NULL
+    CHECK (category IN ('fraud','phishing','gambling_marketing','spam','explicit','general')),
+  note        TEXT        NULL,
+  granted_by  UUID        NULL REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (tenant_id, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_exemptions_tenant_id
+  ON tenant_moderation_exemptions(tenant_id);
+
+ALTER TABLE tenant_moderation_exemptions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY exemptions_service_only ON tenant_moderation_exemptions
+  FOR ALL USING (auth.role() = 'service_role');

@@ -2,11 +2,13 @@ const { supabaseAdmin } = require('../config/supabase');
 const { cacheGet, cacheSet, cacheDel } = require('../utils/cache');
 
 const BLOCKLIST_CACHE_KEY = 'moderation:blocklist';
-const BLOCKLIST_TTL = 60; // seconds — low TTL so admin changes apply quickly
+const EXEMPTIONS_CACHE_PREFIX = 'moderation:exemptions:';
+const BLOCKLIST_TTL = 60;
+const EXEMPTIONS_TTL = 60;
 
 /**
  * Load the active blocklist from Redis cache, falling back to DB.
- * Returns an array of { id, term, term_type, channels, severity } objects
+ * Returns an array of { id, term, term_type, channels, severity, category } objects
  * with regex terms pre-compiled into a `compiled` field.
  */
 async function loadBlocklist() {
@@ -15,7 +17,7 @@ async function loadBlocklist() {
 
   const { data, error } = await supabaseAdmin
     .from('content_blocklist')
-    .select('id, term, term_type, channels, severity')
+    .select('id, term, term_type, channels, severity, category')
     .eq('is_active', true)
     .order('created_at', { ascending: true });
 
@@ -40,35 +42,72 @@ async function loadBlocklist() {
 }
 
 /**
+ * Load the set of exempt categories for a tenant from Redis cache, falling back to DB.
+ * Returns a Set of category strings.
+ */
+async function loadTenantExemptions(tenantId) {
+  const cacheKey = `${EXEMPTIONS_CACHE_PREFIX}${tenantId}`;
+  const cached = await cacheGet(cacheKey);
+  if (cached) return new Set(cached);
+
+  const { data, error } = await supabaseAdmin
+    .from('tenant_moderation_exemptions')
+    .select('category')
+    .eq('tenant_id', tenantId);
+
+  if (error) {
+    console.error(`[moderation] Failed to load exemptions for tenant ${tenantId}:`, error.message);
+    return new Set();
+  }
+
+  const categories = (data || []).map(r => r.category);
+  await cacheSet(cacheKey, categories, EXEMPTIONS_TTL);
+  return new Set(categories);
+}
+
+/**
  * Invalidate the cached blocklist so the next check reloads from DB.
- * Call this after any admin add/update/delete.
+ * Call this after any admin add/update/delete on the blocklist.
  */
 async function invalidateBlocklistCache() {
   await cacheDel(BLOCKLIST_CACHE_KEY);
 }
 
 /**
+ * Invalidate the cached exemptions for a specific tenant.
+ * Call this after granting or revoking an exemption.
+ */
+async function invalidateTenantExemptionsCache(tenantId) {
+  await cacheDel(`${EXEMPTIONS_CACHE_PREFIX}${tenantId}`);
+}
+
+/**
  * Check message content against the active blocklist.
  *
- * @param {string} text     - The message body to check
- * @param {string} channel  - 'sms' | 'whatsapp'
+ * @param {string} text       - The message body to check
+ * @param {string} channel    - 'sms' | 'whatsapp'
+ * @param {string|null} tenantId - When provided, exempt categories are filtered out before matching
  * @returns {{ blocked: boolean, severity: string|null, matched_term: string|null, matched_type: string|null }}
  */
-async function checkContent(text, channel) {
+async function checkContent(text, channel, tenantId = null) {
   if (!text || typeof text !== 'string') {
     return { blocked: false, severity: null, matched_term: null, matched_type: null };
   }
 
-  const blocklist = await loadBlocklist();
+  const [blocklist, exemptions] = await Promise.all([
+    loadBlocklist(),
+    tenantId ? loadTenantExemptions(tenantId) : Promise.resolve(new Set()),
+  ]);
+
   const lower = text.toLowerCase();
 
   for (const entry of blocklist) {
     if (!entry.channels.includes(channel)) continue;
+    if (exemptions.size > 0 && exemptions.has(entry.category)) continue;
 
     let matched = false;
 
     if (entry.term_type === 'word') {
-      // Whole-word match — won't flag "skill" for "kill"
       const pattern = new RegExp(`\\b${escapeRegex(entry.term)}\\b`, 'i');
       matched = pattern.test(text);
     } else if (entry.term_type === 'phrase') {
@@ -111,4 +150,9 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-module.exports = { checkContent, logBlockedMessage, invalidateBlocklistCache };
+module.exports = {
+  checkContent,
+  logBlockedMessage,
+  invalidateBlocklistCache,
+  invalidateTenantExemptionsCache,
+};

@@ -231,7 +231,7 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
   const numSms = normalizedRecipients.length;
 
   // Content moderation — runs on every send regardless of test/live
-  const moderation = await checkContent(message, 'sms');
+  const moderation = await checkContent(message, 'sms', tenantId);
   if (moderation.severity) {
     logBlockedMessage({
       tenantId,
@@ -558,7 +558,7 @@ router.post('/whatsapp', apiKeyAuth, rateLimit, requireScope('whatsapp:send'), a
   const numMessages = normalizedRecipients.length;
 
   // Content moderation — runs on every send regardless of test/live
-  const moderation = await checkContent(message, 'whatsapp');
+  const moderation = await checkContent(message, 'whatsapp', tenantId);
   if (moderation.severity) {
     logBlockedMessage({
       tenantId,

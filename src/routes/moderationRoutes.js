@@ -3,6 +3,7 @@ const { supabaseAdmin } = require("../config/supabase");
 const { requireAuth } = require("../middlewares/authMiddleware");
 const {
 	invalidateBlocklistCache,
+	invalidateTenantExemptionsCache,
 } = require("../services/contentModerationService");
 
 const router = Router();
@@ -102,7 +103,7 @@ router.get(
 		let query = supabaseAdmin
 			.from("content_blocklist")
 			.select(
-				"id, term, term_type, channels, severity, note, is_active, created_by, created_at, updated_at",
+				"id, term, term_type, channels, severity, category, note, is_active, created_by, created_at, updated_at",
 			)
 			.order("created_at", { ascending: false });
 
@@ -244,6 +245,7 @@ router.post(
 			term_type = "phrase",
 			channels = ["sms", "whatsapp"],
 			severity = "block",
+			category = "general",
 			note,
 		} = req.body;
 
@@ -256,6 +258,13 @@ router.post(
 			return res
 				.status(400)
 				.json({ error: `term_type must be one of: ${validTypes.join(", ")}` });
+		}
+
+		const validCategories = ["profanity", "hate_speech", "fraud", "phishing", "gambling_marketing", "spam", "explicit", "general"];
+		if (!validCategories.includes(category)) {
+			return res
+				.status(400)
+				.json({ error: `category must be one of: ${validCategories.join(", ")}` });
 		}
 
 		const validChannels = ["sms", "whatsapp"];
@@ -287,12 +296,13 @@ router.post(
 				term_type,
 				channels,
 				severity,
+				category,
 				note: note || null,
 				is_active: true,
 				created_by: req.user.id,
 			})
 			.select(
-				"id, term, term_type, channels, severity, note, is_active, created_at",
+				"id, term, term_type, channels, severity, category, note, is_active, created_at",
 			)
 			.single();
 
@@ -778,6 +788,370 @@ router.patch(
 		}
 
 		return res.json({ success: true, entry: data });
+	},
+);
+
+// ─────────────────────────────────────────────
+// GET /api/v1/admin/moderation/exemptions
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/exemptions:
+ *   get:
+ *     summary: List tenant moderation exemptions
+ *     description: |
+ *       Returns all per-tenant category exemptions. Optionally filter by `tenant_id`.
+ *       Exempted tenants will not have their messages checked against terms in the exempted category.
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: tenant_id
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Filter exemptions for a specific tenant
+ *     responses:
+ *       200:
+ *         description: List of exemptions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 exemptions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         format: uuid
+ *                       tenant_id:
+ *                         type: string
+ *                         format: uuid
+ *                       tenant_name:
+ *                         type: string
+ *                         example: BetMalawi Ltd
+ *                       category:
+ *                         type: string
+ *                         example: gambling_marketing
+ *                       note:
+ *                         type: string
+ *                         nullable: true
+ *                       granted_by:
+ *                         type: string
+ *                         format: uuid
+ *                         nullable: true
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *                 total:
+ *                   type: integer
+ *                   example: 3
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
+ */
+router.get(
+	"/exemptions",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenant_id } = req.query;
+
+		let query = supabaseAdmin
+			.from("tenant_moderation_exemptions")
+			.select("id, tenant_id, category, note, granted_by, created_at, tenants!tenant_id ( name )")
+			.order("created_at", { ascending: false });
+
+		if (tenant_id) query = query.eq("tenant_id", tenant_id);
+
+		const { data, error } = await query;
+
+		if (error) {
+			console.error("[moderation] List exemptions error:", error.message);
+			return res.status(500).json({ error: "Failed to load exemptions" });
+		}
+
+		const exemptions = (data || []).map(row => ({
+			id: row.id,
+			tenant_id: row.tenant_id,
+			tenant_name: row.tenants?.name || null,
+			category: row.category,
+			note: row.note,
+			granted_by: row.granted_by,
+			created_at: row.created_at,
+		}));
+
+		return res.json({ exemptions, total: exemptions.length });
+	},
+);
+
+// ─────────────────────────────────────────────
+// POST /api/v1/admin/moderation/exemptions
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/exemptions:
+ *   post:
+ *     summary: Grant a category exemption to a tenant
+ *     description: |
+ *       Grants a tenant an exemption from an entire moderation category. All current and future
+ *       terms in that category will be skipped when checking messages for this tenant.
+ *
+ *       **Non-exemptable categories:** `profanity` and `hate_speech` can never be granted as
+ *       exemptions — attempting to do so returns a `400` error.
+ *
+ *       **Exemptable categories:** `fraud`, `phishing`, `gambling_marketing`, `spam`, `explicit`, `general`
+ *
+ *       Changes take effect within 60 seconds (Redis cache TTL).
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - tenant_id
+ *               - category
+ *             properties:
+ *               tenant_id:
+ *                 type: string
+ *                 format: uuid
+ *                 description: The tenant to exempt
+ *               category:
+ *                 type: string
+ *                 enum: [fraud, phishing, gambling_marketing, spam, explicit, general]
+ *                 example: gambling_marketing
+ *                 description: The category to exempt. profanity and hate_speech are not exemptable.
+ *               note:
+ *                 type: string
+ *                 description: Admin note explaining the business reason for this exemption
+ *                 example: Regulated betting operator — licensed by MRA
+ *     responses:
+ *       201:
+ *         description: Exemption granted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Exemption granted
+ *                 exemption:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     tenant_id:
+ *                       type: string
+ *                       format: uuid
+ *                     category:
+ *                       type: string
+ *                       example: gambling_marketing
+ *                     note:
+ *                       type: string
+ *                       nullable: true
+ *                     granted_by:
+ *                       type: string
+ *                       format: uuid
+ *                     created_at:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Invalid category or attempting to exempt a non-exemptable category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "profanity cannot be exempted — this category is enforced for all tenants"
+ *       409:
+ *         description: This tenant already has an exemption for this category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: This tenant already has an exemption for this category
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
+ */
+router.post(
+	"/exemptions",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { tenant_id, category, note } = req.body;
+
+		if (!tenant_id || !category) {
+			return res.status(400).json({ error: "tenant_id and category are required" });
+		}
+
+		const NON_EXEMPTABLE = ["profanity", "hate_speech"];
+		if (NON_EXEMPTABLE.includes(category)) {
+			return res.status(400).json({
+				error: `${category} cannot be exempted — this category is enforced for all tenants`,
+			});
+		}
+
+		const VALID_CATEGORIES = ["fraud", "phishing", "gambling_marketing", "spam", "explicit", "general"];
+		if (!VALID_CATEGORIES.includes(category)) {
+			return res.status(400).json({
+				error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(", ")}`,
+			});
+		}
+
+		const { data, error } = await supabaseAdmin
+			.from("tenant_moderation_exemptions")
+			.insert({
+				tenant_id,
+				category,
+				note: note || null,
+				granted_by: req.user.id,
+			})
+			.select("id, tenant_id, category, note, granted_by, created_at")
+			.single();
+
+		if (error) {
+			if (error.code === "23505") {
+				return res.status(409).json({
+					error: "This tenant already has an exemption for this category",
+				});
+			}
+			if (error.code === "23503") {
+				return res.status(400).json({ error: "Tenant not found" });
+			}
+			console.error("[moderation] Grant exemption error:", error.message);
+			return res.status(500).json({ error: "Failed to grant exemption" });
+		}
+
+		await invalidateTenantExemptionsCache(tenant_id);
+
+		return res.status(201).json({ message: "Exemption granted", exemption: data });
+	},
+);
+
+// ─────────────────────────────────────────────
+// DELETE /api/v1/admin/moderation/exemptions/:id
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/exemptions/{id}:
+ *   delete:
+ *     summary: Revoke a tenant category exemption
+ *     description: |
+ *       Revokes a previously granted exemption. The tenant's messages will be checked against
+ *       that category again within 60 seconds (Redis cache TTL).
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: The exemption ID to revoke
+ *     responses:
+ *       200:
+ *         description: Exemption revoked
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Exemption revoked
+ *       404:
+ *         description: Exemption not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Exemption not found
+ *       403:
+ *         description: Platform admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Platform admin access required
+ */
+router.delete(
+	"/exemptions/:id",
+	requireAuth,
+	requirePlatformAdmin,
+	async (req, res) => {
+		const { id } = req.params;
+
+		// Fetch first so we can invalidate the right tenant's cache
+		const { data: existing } = await supabaseAdmin
+			.from("tenant_moderation_exemptions")
+			.select("tenant_id")
+			.eq("id", id)
+			.single();
+
+		if (!existing) {
+			return res.status(404).json({ error: "Exemption not found" });
+		}
+
+		const { error } = await supabaseAdmin
+			.from("tenant_moderation_exemptions")
+			.delete()
+			.eq("id", id);
+
+		if (error) {
+			console.error("[moderation] Revoke exemption error:", error.message);
+			return res.status(500).json({ error: "Failed to revoke exemption" });
+		}
+
+		await invalidateTenantExemptionsCache(existing.tenant_id);
+
+		return res.json({ success: true, message: "Exemption revoked" });
 	},
 );
 
