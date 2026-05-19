@@ -45,6 +45,47 @@ function requirePlatformAdmin(req, res, next) {
  *     responses:
  *       200:
  *         description: List of blocklist entries
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 blocklist:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         format: uuid
+ *                       term:
+ *                         type: string
+ *                         example: free money
+ *                       term_type:
+ *                         type: string
+ *                         enum: [word, phrase, regex]
+ *                       channels:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                         example: [sms, whatsapp]
+ *                       severity:
+ *                         type: string
+ *                         enum: [block, flag]
+ *                       note:
+ *                         type: string
+ *                         nullable: true
+ *                       is_active:
+ *                         type: boolean
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *                       updated_at:
+ *                         type: string
+ *                         format: date-time
+ *                 total:
+ *                   type: integer
+ *                   example: 42
  *       403:
  *         description: Platform admin access required
  */
@@ -125,10 +166,62 @@ router.get('/blocklist', requireAuth, requirePlatformAdmin, async (req, res) => 
  *     responses:
  *       201:
  *         description: Term added to blocklist
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Term added to blocklist
+ *                 entry:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     term:
+ *                       type: string
+ *                       example: free money
+ *                     term_type:
+ *                       type: string
+ *                       enum: [word, phrase, regex]
+ *                     channels:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       example: [sms, whatsapp]
+ *                     severity:
+ *                       type: string
+ *                       enum: [block, flag]
+ *                     note:
+ *                       type: string
+ *                       nullable: true
+ *                     is_active:
+ *                       type: boolean
+ *                     created_at:
+ *                       type: string
+ *                       format: date-time
  *       400:
  *         description: Missing term or invalid regex
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Invalid regex: Unterminated group
  *       409:
  *         description: Term already exists with this type
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: This term with this type already exists on the blocklist
  *       403:
  *         description: Platform admin access required
  */
@@ -231,8 +324,60 @@ router.post('/blocklist', requireAuth, requirePlatformAdmin, async (req, res) =>
  *     responses:
  *       200:
  *         description: Entry updated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Entry updated
+ *                 entry:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     term:
+ *                       type: string
+ *                     term_type:
+ *                       type: string
+ *                       enum: [word, phrase, regex]
+ *                     channels:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                     severity:
+ *                       type: string
+ *                       enum: [block, flag]
+ *                     note:
+ *                       type: string
+ *                       nullable: true
+ *                     is_active:
+ *                       type: boolean
+ *                     updated_at:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: No valid fields to update
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: No valid fields to update
  *       404:
  *         description: Entry not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Blocklist entry not found
  *       403:
  *         description: Platform admin access required
  */
@@ -294,8 +439,27 @@ router.patch('/blocklist/:id', requireAuth, requirePlatformAdmin, async (req, re
  *     responses:
  *       200:
  *         description: Term removed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Term removed from blocklist
  *       404:
  *         description: Entry not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Blocklist entry not found
  *       403:
  *         description: Platform admin access required
  */
@@ -366,6 +530,64 @@ router.delete('/blocklist/:id', requireAuth, requirePlatformAdmin, async (req, r
  *     responses:
  *       200:
  *         description: Paginated list of flagged messages
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 flagged:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         format: uuid
+ *                       tenant_id:
+ *                         type: string
+ *                         format: uuid
+ *                       channel:
+ *                         type: string
+ *                         enum: [sms, whatsapp]
+ *                       message_content:
+ *                         type: string
+ *                         example: Win a free prize now!
+ *                       recipient_count:
+ *                         type: integer
+ *                         example: 3
+ *                       matched_term:
+ *                         type: string
+ *                         example: win a prize
+ *                       matched_type:
+ *                         type: string
+ *                         enum: [word, phrase, regex]
+ *                       severity:
+ *                         type: string
+ *                         enum: [block, flag]
+ *                       request_ip:
+ *                         type: string
+ *                         nullable: true
+ *                       reviewed:
+ *                         type: boolean
+ *                       reviewed_at:
+ *                         type: string
+ *                         format: date-time
+ *                         nullable: true
+ *                       review_note:
+ *                         type: string
+ *                         nullable: true
+ *                       blocked_at:
+ *                         type: string
+ *                         format: date-time
+ *                 total:
+ *                   type: integer
+ *                   example: 120
+ *                 limit:
+ *                   type: integer
+ *                   example: 50
+ *                 offset:
+ *                   type: integer
+ *                   example: 0
  *       403:
  *         description: Platform admin access required
  */
@@ -444,8 +666,39 @@ router.get('/flagged', requireAuth, requirePlatformAdmin, async (req, res) => {
  *     responses:
  *       200:
  *         description: Marked as reviewed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 entry:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     reviewed:
+ *                       type: boolean
+ *                       example: true
+ *                     reviewed_at:
+ *                       type: string
+ *                       format: date-time
+ *                     review_note:
+ *                       type: string
+ *                       nullable: true
  *       404:
  *         description: Entry not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Flagged message not found
  *       403:
  *         description: Platform admin access required
  */

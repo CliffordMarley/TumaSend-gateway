@@ -69,17 +69,99 @@ CREATE POLICY blocked_messages_service_only ON blocked_messages
 
 
 -- ============================================================
--- STEP 3: Seed a minimal starter blocklist
+-- STEP 3: Seed starter blocklist
+-- Categories: profanity, hate speech, fraud/phishing, spam,
+--             mobile-money scams, loan sharks, explicit content
+-- All entries use ON CONFLICT DO NOTHING — safe to re-run.
 -- ============================================================
 INSERT INTO content_blocklist (term, term_type, channels, severity, note)
 VALUES
-  ('fuck',        'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
-  ('shit',        'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
-  ('nigger',      'word',   ARRAY['sms','whatsapp'], 'block', 'Hate speech'),
-  ('nigga',       'word',   ARRAY['sms','whatsapp'], 'block', 'Hate speech'),
-  ('buy cheap',   'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam indicator'),
-  ('click here',  'phrase', ARRAY['sms','whatsapp'], 'flag',  'Phishing indicator'),
-  ('free money',  'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
-  ('win a prize', 'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
-  ('send your pin','phrase',ARRAY['sms','whatsapp'], 'block', 'Fraud/phishing')
+
+  -- ── Profanity (word — whole-word only, won't flag "skill" for "kill") ──
+  ('fuck',          'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('shit',          'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('ass',           'word',   ARRAY['sms','whatsapp'], 'flag',  'Profanity — flagged only (common in legitimate use)'),
+  ('bitch',         'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('bastard',       'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('cunt',          'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('dick',          'word',   ARRAY['sms','whatsapp'], 'flag',  'Profanity — flagged only'),
+  ('pussy',         'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('whore',         'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity'),
+  ('faggot',        'word',   ARRAY['sms','whatsapp'], 'block', 'Profanity / slur'),
+
+  -- ── Hate speech ──
+  ('nigger',        'word',   ARRAY['sms','whatsapp'], 'block', 'Racial slur'),
+  ('nigga',         'word',   ARRAY['sms','whatsapp'], 'block', 'Racial slur'),
+  ('kaffir',        'word',   ARRAY['sms','whatsapp'], 'block', 'Racial slur — Southern Africa'),
+  ('chink',         'word',   ARRAY['sms','whatsapp'], 'block', 'Racial slur'),
+  ('wetback',       'word',   ARRAY['sms','whatsapp'], 'block', 'Racial slur'),
+  ('retard',        'word',   ARRAY['sms','whatsapp'], 'block', 'Ableist slur'),
+  ('kill all',      'phrase', ARRAY['sms','whatsapp'], 'block', 'Incitement to violence'),
+  ('death to',      'phrase', ARRAY['sms','whatsapp'], 'block', 'Incitement to violence'),
+
+  -- ── Fraud / phishing ──
+  ('free money',       'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
+  ('win a prize',      'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
+  ('you have won',     'phrase', ARRAY['sms','whatsapp'], 'block', 'Lottery scam'),
+  ('congratulations you',  'phrase', ARRAY['sms','whatsapp'], 'flag',  'Lottery scam indicator'),
+  ('claim your reward',    'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
+  ('claim your prize',     'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud indicator'),
+  ('send your pin',        'phrase', ARRAY['sms','whatsapp'], 'block', 'PIN phishing'),
+  ('share your pin',       'phrase', ARRAY['sms','whatsapp'], 'block', 'PIN phishing'),
+  ('send your password',   'phrase', ARRAY['sms','whatsapp'], 'block', 'Password phishing'),
+  ('confirm your otp',     'phrase', ARRAY['sms','whatsapp'], 'block', 'OTP phishing'),
+  ('send otp',             'phrase', ARRAY['sms','whatsapp'], 'block', 'OTP phishing'),
+  ('verify your account by replying', 'phrase', ARRAY['sms','whatsapp'], 'block', 'Phishing'),
+  ('your account has been suspended', 'phrase', ARRAY['sms','whatsapp'], 'flag',  'Phishing / impersonation'),
+  ('bank account details',  'phrase', ARRAY['sms','whatsapp'], 'flag',  'Data harvesting indicator'),
+  ('click to claim',        'phrase', ARRAY['sms','whatsapp'], 'block', 'Phishing link'),
+  ('limited time offer',    'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam / urgency tactic'),
+  ('act now',               'phrase', ARRAY['sms','whatsapp'], 'flag',  'Urgency spam'),
+  ('urgent action required','phrase', ARRAY['sms','whatsapp'], 'flag',  'Urgency phishing'),
+
+  -- ── Mobile-money scams (Malawi-specific: Airtel Money, TNM Mpamba) ──
+  ('airtel money pin',  'phrase', ARRAY['sms','whatsapp'], 'block', 'Mobile money PIN phishing'),
+  ('mpamba pin',        'phrase', ARRAY['sms','whatsapp'], 'block', 'Mobile money PIN phishing'),
+  ('send airtel money', 'phrase', ARRAY['sms','whatsapp'], 'flag',  'Mobile money scam indicator'),
+  ('send mpamba',       'phrase', ARRAY['sms','whatsapp'], 'flag',  'Mobile money scam indicator'),
+  ('mobile money pin',  'phrase', ARRAY['sms','whatsapp'], 'block', 'Mobile money PIN phishing'),
+  ('reverse transaction','phrase', ARRAY['sms','whatsapp'], 'block', 'Reversal scam'),
+  ('wrong transfer',    'phrase', ARRAY['sms','whatsapp'], 'flag',  'Reversal scam indicator'),
+  ('sent by mistake',   'phrase', ARRAY['sms','whatsapp'], 'flag',  'Reversal scam indicator'),
+  ('refund the money',  'phrase', ARRAY['sms','whatsapp'], 'flag',  'Reversal scam indicator'),
+
+  -- ── Loan shark / predatory lending ──
+  ('instant loan no collateral', 'phrase', ARRAY['sms','whatsapp'], 'flag',  'Predatory lending indicator'),
+  ('quick loan no documents',    'phrase', ARRAY['sms','whatsapp'], 'flag',  'Predatory lending indicator'),
+  ('borrow cash instantly',      'phrase', ARRAY['sms','whatsapp'], 'flag',  'Predatory lending indicator'),
+
+  -- ── Spam indicators ──
+  ('buy cheap',       'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam indicator'),
+  ('click here',      'phrase', ARRAY['sms','whatsapp'], 'flag',  'Phishing / spam link'),
+  ('unsubscribe',     'phrase', ARRAY['sms'],            'flag',  'Bulk unsolicited SMS indicator'),
+  ('opt out',         'phrase', ARRAY['sms'],            'flag',  'Bulk unsolicited SMS indicator'),
+  ('for more info reply stop', 'phrase', ARRAY['sms','whatsapp'], 'flag', 'Unsolicited bulk SMS'),
+  ('reply stop to unsubscribe','phrase', ARRAY['sms','whatsapp'], 'flag', 'Unsolicited bulk SMS'),
+  ('100% free',       'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam indicator'),
+  ('no cost',         'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam indicator'),
+  ('make money fast', 'phrase', ARRAY['sms','whatsapp'], 'block', 'Fraud / pyramid scheme'),
+  ('earn from home',  'phrase', ARRAY['sms','whatsapp'], 'flag',  'Spam / pyramid scheme indicator'),
+  ('double your money','phrase', ARRAY['sms','whatsapp'], 'block', 'Investment fraud'),
+  ('guaranteed returns','phrase',ARRAY['sms','whatsapp'], 'flag',  'Investment fraud indicator'),
+  ('pyramid',         'word',   ARRAY['sms','whatsapp'], 'flag',  'Pyramid scheme indicator'),
+  ('ponzi',           'word',   ARRAY['sms','whatsapp'], 'flag',  'Ponzi scheme indicator'),
+
+  -- ── Explicit content ──
+  ('xxx',             'word',   ARRAY['sms','whatsapp'], 'block', 'Explicit content'),
+  ('porn',            'word',   ARRAY['sms','whatsapp'], 'block', 'Explicit content'),
+  ('nude',            'word',   ARRAY['sms','whatsapp'], 'flag',  'Explicit content indicator'),
+  ('naked pics',      'phrase', ARRAY['sms','whatsapp'], 'block', 'Explicit content'),
+  ('send nudes',      'phrase', ARRAY['sms','whatsapp'], 'block', 'Explicit content / harassment'),
+
+  -- ── Regex patterns ──
+  -- Matches URLs shortened to common phishing domains
+  ('^.*(bit\.ly|tinyurl\.com|t\.co).*$', 'regex', ARRAY['sms','whatsapp'], 'flag', 'Shortened URL — review for phishing'),
+  -- Matches messages asking for any 4-6 digit PIN/OTP code
+  ('(send|reply|share|give).{0,30}\\b\\d{4,6}\\b', 'regex', ARRAY['sms','whatsapp'], 'block', 'PIN/OTP extraction pattern')
+
 ON CONFLICT (term, term_type) DO NOTHING;
