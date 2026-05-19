@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node -e \"require\\('whatsapp-web.js'\\); require\\('qrcode'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node --check src/services/whatsappClientManager.js)",
+      "Bash(node --check src/services/whatsappService.js)",
+      "Bash(node --check src/routes/whatsappSessionRoutes.js)",
+      "Bash(node --check src/workers/whatsappWorker.js)",
+      "Bash(node --check src/routes/sendRoutes.js)"
+    ]
+  }
+}
