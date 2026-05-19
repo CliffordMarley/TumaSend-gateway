@@ -327,10 +327,134 @@ router.post('/login', async (req, res) => {
  *     responses:
  *       201:
  *         description: Business created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Business created successfully
+ *                 tenant:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     name:
+ *                       type: string
+ *                       example: My Super Business
+ *                     slug:
+ *                       type: string
+ *                       example: my-super-business-4821
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                     business_type:
+ *                       type: string
+ *                       example: sole_proprietor
+ *                     kyc_status:
+ *                       type: string
+ *                       enum: [pending, approved, rejected]
+ *                       example: pending
+ *                     sms_credits:
+ *                       type: integer
+ *                       example: 0
+ *                     whatsapp_credits:
+ *                       type: integer
+ *                       example: 0
+ *                     created_at:
+ *                       type: string
+ *                       format: date-time
+ *                 membership:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       format: uuid
+ *                     tenant_id:
+ *                       type: string
+ *                       format: uuid
+ *                     user_id:
+ *                       type: string
+ *                       format: uuid
+ *                     is_owner:
+ *                       type: boolean
+ *                       example: true
+ *                     status:
+ *                       type: string
+ *                       example: active
+ *                 signup_bonus:
+ *                   type: object
+ *                   description: Welcome credits granted automatically on every new signup
+ *                   properties:
+ *                     sms_credits_granted:
+ *                       type: integer
+ *                       example: 10
+ *                     whatsapp_credits_granted:
+ *                       type: integer
+ *                       example: 10
+ *                     sms_credits_balance:
+ *                       type: integer
+ *                       description: Total SMS credits after bonus (equals the granted amount for a brand-new account)
+ *                       example: 10
+ *                     whatsapp_credits_balance:
+ *                       type: integer
+ *                       description: Total WhatsApp credits after bonus
+ *                       example: 10
+ *                     message:
+ *                       type: string
+ *                       example: "Welcome! You received 10 free SMS credits and 10 free WhatsApp credits to get started."
  *       400:
  *         description: Missing business name
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: business_name is required
+ *       401:
+ *         description: Missing or invalid authentication
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Unauthorized
+ *       409:
+ *         description: User already owns a business, or business name is already taken
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: You already own a business account
+ *                 business:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Name of the existing business (only present on ownership conflict)
+ *                   example: My Super Business
+ *                 message:
+ *                   type: string
+ *                   example: A user can only own one business. Please contact support to manage multiple businesses.
  *       500:
  *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Failed to create business
+ *                 details:
+ *                   type: string
  */
 router.post('/business', requireAuth, async (req, res) => {
   const { 
@@ -429,10 +553,28 @@ router.post('/business', requireAuth, async (req, res) => {
     
     if (memberError) throw memberError;
 
+    // 6. Grant signup bonus — never blocks the response; logged on failure
+    const { data: bonusResult, error: bonusError } = await supabaseAdmin.rpc('grant_signup_bonus', {
+      p_tenant_id: tenant.id,
+    });
+
+    if (bonusError) {
+      console.error('[signup bonus] Failed to grant bonus for tenant', tenant.id, bonusError.message);
+    }
+
+    const bonus = bonusResult?.[0] ?? null;
+
     res.status(201).json({
       message: 'Business created successfully',
       tenant,
-      membership
+      membership,
+      signup_bonus: {
+        sms_credits_granted: 10,
+        whatsapp_credits_granted: 10,
+        sms_credits_balance: bonus?.sms_credits ?? 10,
+        whatsapp_credits_balance: bonus?.whatsapp_credits ?? 10,
+        message: 'Welcome! You received 10 free SMS credits and 10 free WhatsApp credits to get started.',
+      },
     });
   } catch (error) {
     console.error('Business Creation Error:', error);
