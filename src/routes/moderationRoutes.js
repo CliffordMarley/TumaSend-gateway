@@ -1,0 +1,475 @@
+const { Router } = require('express');
+const { supabaseAdmin } = require('../config/supabase');
+const { requireAuth } = require('../middlewares/authMiddleware');
+const { invalidateBlocklistCache } = require('../services/contentModerationService');
+
+const router = Router();
+
+// All routes require platform admin (enforced by requirePlatformAdmin below).
+// systemKeyAuth is applied at mount time in app.js.
+
+function requirePlatformAdmin(req, res, next) {
+  if (!req.user?.is_platform_admin) {
+    return res.status(403).json({ error: 'Platform admin access required' });
+  }
+  next();
+}
+
+// ─────────────────────────────────────────────
+// GET /api/v1/admin/moderation/blocklist
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/blocklist:
+ *   get:
+ *     summary: List content blocklist
+ *     description: Returns all terms on the content blocklist. Platform admin only.
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: active_only
+ *         schema:
+ *           type: boolean
+ *           default: true
+ *         description: Filter to only active terms
+ *       - in: query
+ *         name: channel
+ *         schema:
+ *           type: string
+ *           enum: [sms, whatsapp]
+ *         description: Filter by channel
+ *     responses:
+ *       200:
+ *         description: List of blocklist entries
+ *       403:
+ *         description: Platform admin access required
+ */
+router.get('/blocklist', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const activeOnly = req.query.active_only !== 'false';
+  const channel = req.query.channel;
+
+  let query = supabaseAdmin
+    .from('content_blocklist')
+    .select('id, term, term_type, channels, severity, note, is_active, created_by, created_at, updated_at')
+    .order('created_at', { ascending: false });
+
+  if (activeOnly) query = query.eq('is_active', true);
+  if (channel) query = query.contains('channels', [channel]);
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('[moderation] List blocklist error:', error.message);
+    return res.status(500).json({ error: 'Failed to load blocklist' });
+  }
+
+  return res.json({ blocklist: data || [], total: (data || []).length });
+});
+
+// ─────────────────────────────────────────────
+// POST /api/v1/admin/moderation/blocklist
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/blocklist:
+ *   post:
+ *     summary: Add a term to the blocklist
+ *     description: |
+ *       Adds a word, phrase, or regex pattern to the content blocklist.
+ *
+ *       - **word**: whole-word match (e.g. "kill" won't match "skill")
+ *       - **phrase**: case-insensitive substring match anywhere in the message
+ *       - **regex**: raw JavaScript-compatible regular expression (no flags needed)
+ *
+ *       Changes take effect within 60 seconds (Redis cache TTL).
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - term
+ *             properties:
+ *               term:
+ *                 type: string
+ *                 description: The word, phrase, or regex to block
+ *                 example: free money
+ *               term_type:
+ *                 type: string
+ *                 enum: [word, phrase, regex]
+ *                 default: phrase
+ *               channels:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   enum: [sms, whatsapp]
+ *                 default: [sms, whatsapp]
+ *               severity:
+ *                 type: string
+ *                 enum: [block, flag]
+ *                 default: block
+ *                 description: block — reject message with error; flag — allow but log for review
+ *               note:
+ *                 type: string
+ *                 description: Admin note explaining why this term is blocked
+ *     responses:
+ *       201:
+ *         description: Term added to blocklist
+ *       400:
+ *         description: Missing term or invalid regex
+ *       409:
+ *         description: Term already exists with this type
+ *       403:
+ *         description: Platform admin access required
+ */
+router.post('/blocklist', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const { term, term_type = 'phrase', channels = ['sms', 'whatsapp'], severity = 'block', note } = req.body;
+
+  if (!term || typeof term !== 'string' || term.trim().length === 0) {
+    return res.status(400).json({ error: 'term is required' });
+  }
+
+  const validTypes = ['word', 'phrase', 'regex'];
+  if (!validTypes.includes(term_type)) {
+    return res.status(400).json({ error: `term_type must be one of: ${validTypes.join(', ')}` });
+  }
+
+  const validChannels = ['sms', 'whatsapp'];
+  const invalidChannels = channels.filter(c => !validChannels.includes(c));
+  if (invalidChannels.length > 0) {
+    return res.status(400).json({ error: `Invalid channels: ${invalidChannels.join(', ')}` });
+  }
+
+  if (!['block', 'flag'].includes(severity)) {
+    return res.status(400).json({ error: 'severity must be "block" or "flag"' });
+  }
+
+  if (term_type === 'regex') {
+    try {
+      new RegExp(term.trim(), 'i');
+    } catch (e) {
+      return res.status(400).json({ error: `Invalid regex: ${e.message}` });
+    }
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('content_blocklist')
+    .insert({
+      term: term.trim(),
+      term_type,
+      channels,
+      severity,
+      note: note || null,
+      is_active: true,
+      created_by: req.user.id,
+    })
+    .select('id, term, term_type, channels, severity, note, is_active, created_at')
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'This term with this type already exists on the blocklist' });
+    }
+    console.error('[moderation] Add term error:', error.message);
+    return res.status(500).json({ error: 'Failed to add term' });
+  }
+
+  await invalidateBlocklistCache();
+
+  return res.status(201).json({ message: 'Term added to blocklist', entry: data });
+});
+
+// ─────────────────────────────────────────────
+// PATCH /api/v1/admin/moderation/blocklist/:id
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/blocklist/{id}:
+ *   patch:
+ *     summary: Update a blocklist entry
+ *     description: Update severity, channels, active status, or note for a blocklist entry.
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               severity:
+ *                 type: string
+ *                 enum: [block, flag]
+ *               channels:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               is_active:
+ *                 type: boolean
+ *               note:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Entry updated
+ *       404:
+ *         description: Entry not found
+ *       403:
+ *         description: Platform admin access required
+ */
+router.patch('/blocklist/:id', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { severity, channels, is_active, note } = req.body;
+
+  const updates = {};
+  if (severity !== undefined) {
+    if (!['block', 'flag'].includes(severity)) {
+      return res.status(400).json({ error: 'severity must be "block" or "flag"' });
+    }
+    updates.severity = severity;
+  }
+  if (channels !== undefined) updates.channels = channels;
+  if (is_active !== undefined) updates.is_active = Boolean(is_active);
+  if (note !== undefined) updates.note = note;
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No valid fields to update' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('content_blocklist')
+    .update(updates)
+    .eq('id', id)
+    .select('id, term, term_type, channels, severity, note, is_active, updated_at')
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Blocklist entry not found' });
+  }
+
+  await invalidateBlocklistCache();
+
+  return res.json({ message: 'Entry updated', entry: data });
+});
+
+// ─────────────────────────────────────────────
+// DELETE /api/v1/admin/moderation/blocklist/:id
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/blocklist/{id}:
+ *   delete:
+ *     summary: Remove a term from the blocklist
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Term removed
+ *       404:
+ *         description: Entry not found
+ *       403:
+ *         description: Platform admin access required
+ */
+router.delete('/blocklist/:id', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  const { error } = await supabaseAdmin
+    .from('content_blocklist')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    return res.status(404).json({ error: 'Blocklist entry not found' });
+  }
+
+  await invalidateBlocklistCache();
+
+  return res.json({ success: true, message: 'Term removed from blocklist' });
+});
+
+// ─────────────────────────────────────────────
+// GET /api/v1/admin/moderation/flagged
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/flagged:
+ *   get:
+ *     summary: List blocked and flagged messages
+ *     description: |
+ *       Returns a paginated log of all messages that were blocked or flagged by content moderation.
+ *       Use this for admin review. Filter by `reviewed=false` to see pending items.
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: reviewed
+ *         schema:
+ *           type: boolean
+ *         description: Filter by review status (omit for all)
+ *       - in: query
+ *         name: severity
+ *         schema:
+ *           type: string
+ *           enum: [block, flag]
+ *       - in: query
+ *         name: channel
+ *         schema:
+ *           type: string
+ *           enum: [sms, whatsapp]
+ *       - in: query
+ *         name: tenant_id
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *     responses:
+ *       200:
+ *         description: Paginated list of flagged messages
+ *       403:
+ *         description: Platform admin access required
+ */
+router.get('/flagged', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const { reviewed, severity, channel, tenant_id } = req.query;
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const offset = parseInt(req.query.offset || '0', 10);
+
+  let query = supabaseAdmin
+    .from('blocked_messages')
+    .select(`
+      id,
+      tenant_id,
+      channel,
+      message_content,
+      recipient_count,
+      matched_term,
+      matched_type,
+      severity,
+      request_ip,
+      reviewed,
+      reviewed_by,
+      reviewed_at,
+      review_note,
+      blocked_at,
+      tenants!tenant_id ( name ),
+      api_keys!api_key_id ( name, key_prefix )
+    `, { count: 'exact' })
+    .order('blocked_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (reviewed !== undefined) query = query.eq('reviewed', reviewed === 'true');
+  if (severity) query = query.eq('severity', severity);
+  if (channel) query = query.eq('channel', channel);
+  if (tenant_id) query = query.eq('tenant_id', tenant_id);
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    console.error('[moderation] Flagged list error:', error.message);
+    return res.status(500).json({ error: 'Failed to load flagged messages' });
+  }
+
+  return res.json({ flagged: data || [], total: count, limit, offset });
+});
+
+// ─────────────────────────────────────────────
+// PATCH /api/v1/admin/moderation/flagged/:id/review
+// ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/v1/admin/moderation/flagged/{id}/review:
+ *   patch:
+ *     summary: Mark a flagged message as reviewed
+ *     tags:
+ *       - Moderation
+ *     security:
+ *       - SystemKeyAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               review_note:
+ *                 type: string
+ *                 description: Optional note from the reviewing admin
+ *     responses:
+ *       200:
+ *         description: Marked as reviewed
+ *       404:
+ *         description: Entry not found
+ *       403:
+ *         description: Platform admin access required
+ */
+router.patch('/flagged/:id/review', requireAuth, requirePlatformAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { review_note } = req.body;
+
+  const { data, error } = await supabaseAdmin
+    .from('blocked_messages')
+    .update({
+      reviewed: true,
+      reviewed_by: req.user.id,
+      reviewed_at: new Date().toISOString(),
+      review_note: review_note || null,
+    })
+    .eq('id', id)
+    .select('id, reviewed, reviewed_at, review_note')
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Flagged message not found' });
+  }
+
+  return res.json({ success: true, entry: data });
+});
+
+module.exports = router;

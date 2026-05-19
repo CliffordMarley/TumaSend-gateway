@@ -6,6 +6,7 @@ const { rateLimit } = require('../middlewares/rateLimit');
 const { requireScope } = require('../middlewares/requireScope');
 const { queueSMS } = require('../services/smsService');
 const { sendWhatsAppMessage, deductWhatsAppCredits } = require('../services/whatsappService');
+const { checkContent, logBlockedMessage } = require('../services/contentModerationService');
 const { normalizePhone, isValidMalawiPhone } = require('../utils/numberResolver');
 
 const router = Router();
@@ -105,7 +106,9 @@ async function upsertContactsFromRecipients(tenantId, phones, batchId) {
  *       402:
  *         description: Insufficient SMS credits
  *       403:
- *         description: Sender ID mismatch
+ *         description: Sender ID mismatch or insufficient scope
+ *       422:
+ *         description: Message blocked by content moderation
  *       401:
  *         description: Invalid or missing API key
  */
@@ -149,6 +152,29 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
   }
 
   const numSms = normalizedRecipients.length;
+
+  // Content moderation — runs on every send regardless of test/live
+  const moderation = await checkContent(message, 'sms');
+  if (moderation.severity) {
+    logBlockedMessage({
+      tenantId,
+      channel: 'sms',
+      apiKeyId,
+      messageContent: message,
+      recipientCount: numSms,
+      matchedTerm: moderation.matched_term,
+      matchedType: moderation.matched_type,
+      severity: moderation.severity,
+      requestIp: req.ip,
+    }).catch(err => console.error('[moderation] log error:', err.message));
+
+    if (moderation.blocked) {
+      return res.status(422).json({
+        error: 'Message blocked by content moderation',
+        reason: `Contains restricted content`,
+      });
+    }
+  }
 
   // Test keys never touch credits
   let isPostpaid = isTest;
@@ -346,6 +372,8 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
  *         description: Invalid or missing API key
  *       403:
  *         description: API key does not have the whatsapp:send scope
+ *       422:
+ *         description: Message blocked by content moderation
  *       503:
  *         description: WhatsApp session not connected for this tenant
  */
@@ -382,6 +410,29 @@ router.post('/whatsapp', apiKeyAuth, rateLimit, requireScope('whatsapp:send'), a
   }
 
   const numMessages = normalizedRecipients.length;
+
+  // Content moderation — runs on every send regardless of test/live
+  const moderation = await checkContent(message, 'whatsapp');
+  if (moderation.severity) {
+    logBlockedMessage({
+      tenantId,
+      channel: 'whatsapp',
+      apiKeyId,
+      messageContent: message,
+      recipientCount: numMessages,
+      matchedTerm: moderation.matched_term,
+      matchedType: moderation.matched_type,
+      severity: moderation.severity,
+      requestIp: req.ip,
+    }).catch(err => console.error('[moderation] log error:', err.message));
+
+    if (moderation.blocked) {
+      return res.status(422).json({
+        error: 'Message blocked by content moderation',
+        reason: `Contains restricted content`,
+      });
+    }
+  }
 
   // Verify session is ready before creating the batch
   if (!isTest) {
