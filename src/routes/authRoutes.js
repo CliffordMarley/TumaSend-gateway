@@ -1,16 +1,22 @@
-const { Router } = require('express');
-const axios = require('axios');
-const admin = require('../config/firebase');
-const { requireAuth } = require('../middlewares/authMiddleware');
-const { supabaseAdmin } = require('../config/supabase');
+const { Router } = require("express");
+const axios = require("axios");
+const admin = require("../config/firebase");
+const { requireAuth } = require("../middlewares/authMiddleware");
+const { supabaseAdmin } = require("../config/supabase");
 
-const { normalizePhone, isValidMalawiPhone } = require('../utils/numberResolver');
-const { sendWelcomeEmail, sendBusinessCreatedEmail } = require('../services/emailService');
+const {
+	normalizePhone,
+	isValidMalawiPhone,
+} = require("../utils/numberResolver");
+const {
+	sendWelcomeEmail,
+	sendBusinessCreatedEmail,
+} = require("../services/emailService");
 
 const router = Router();
 
 // Firebase REST API endpoints
-const FIREBASE_REST_API = 'https://identitytoolkit.googleapis.com/v1';
+const FIREBASE_REST_API = "https://identitytoolkit.googleapis.com/v1";
 
 /**
  * @swagger
@@ -61,109 +67,124 @@ const FIREBASE_REST_API = 'https://identitytoolkit.googleapis.com/v1';
  *       500:
  *         description: Server error
  */
-router.post('/register', async (req, res) => {
-  const { email, password, full_name, phone } = req.body;
+router.post("/register", async (req, res) => {
+	const { email, password, full_name, phone } = req.body;
 
-  // Validate required fields
-  if (!email || !password || !full_name || !phone) {
-    return res.status(400).json({ 
-      error: 'Missing required fields',
-      required: ['email', 'password', 'full_name', 'phone']
-    });
-  }
+	// Validate required fields
+	if (!email || !password || !full_name || !phone) {
+		return res.status(400).json({
+			error: "Missing required fields",
+			required: ["email", "password", "full_name", "phone"],
+		});
+	}
 
-  // Normalize and validate phone number
-  const normalizedPhone = normalizePhone(phone);
-  if (!isValidMalawiPhone(normalizedPhone)) {
-    return res.status(400).json({ 
-      error: 'Invalid phone number',
-      message: 'Phone must be a valid Malawi number (Airtel: 265991XXXXXX / TNM: 265881XXXXXX)',
-      received: phone,
-      normalized: normalizedPhone
-    });
-  }
+	// Normalize and validate phone number
+	const normalizedPhone = normalizePhone(phone);
+	if (!isValidMalawiPhone(normalizedPhone)) {
+		return res.status(400).json({
+			error: "Invalid phone number",
+			message:
+				"Phone must be a valid Malawi number (Airtel: 265991XXXXXX / TNM: 265881XXXXXX)",
+			received: phone,
+			normalized: normalizedPhone,
+		});
+	}
 
-  // Check for existing phone in our DB
-  const { data: existingPhone } = await supabaseAdmin
-    .from('users')
-    .select('id')
-    .eq('phone', normalizedPhone)
-    .single();
-  
-  if (existingPhone) {
-    return res.status(409).json({ error: 'This phone number is already registered' });
-  }
+	// Check for existing phone in our DB
+	const { data: existingPhone } = await supabaseAdmin
+		.from("users")
+		.select("id")
+		.eq("phone", normalizedPhone)
+		.single();
 
-  try {
-    // 1. Create User in Firebase Auth
-    const userRecord = await admin.auth().createUser({
-      email,
-      password,
-      displayName: full_name,
-      phoneNumber: `+${normalizedPhone}`
-    });
+	if (existingPhone) {
+		return res
+			.status(409)
+			.json({ error: "This phone number is already registered" });
+	}
 
-    const firebaseUid = userRecord.uid;
+	try {
+		// 1. Create User in Firebase Auth
+		const userRecord = await admin.auth().createUser({
+			email,
+			password,
+			displayName: full_name,
+			phoneNumber: `+${normalizedPhone}`,
+		});
 
-    // 2. Create User in Supabase
-    const { data: user, error: userError } = await supabaseAdmin
-      .from('users')
-      .insert({
-        firebase_uid: firebaseUid,
-        email: email,
-        full_name: full_name,
-        phone: normalizedPhone,
-        status: 'active'
-      })
-      .select()
-      .single();
+		const firebaseUid = userRecord.uid;
 
-    if (userError) {
-      await admin.auth().deleteUser(firebaseUid);
-      throw userError;
-    }
+		// 2. Create User in Supabase
+		const { data: user, error: userError } = await supabaseAdmin
+			.from("users")
+			.insert({
+				firebase_uid: firebaseUid,
+				email: email,
+				full_name: full_name,
+				phone: normalizedPhone,
+				status: "active",
+			})
+			.select()
+			.single();
 
-    sendWelcomeEmail({ email: user.email, fullName: user.full_name })
-      .catch(err => console.error('[email] welcome:', err.message));
+		if (userError) {
+			await admin.auth().deleteUser(firebaseUid);
+			throw userError;
+		}
 
-    // 3. Auto-login to get JWT token
-    const apiKey = process.env.FIREBASE_WEB_API_KEY;
-    if (apiKey) {
-      try {
-        const loginResponse = await axios.post(
-          `${FIREBASE_REST_API}/accounts:signInWithPassword?key=${apiKey}`,
-          {
-            email,
-            password,
-            returnSecureToken: true
-          }
-        );
-        return res.status(201).json({
-          message: 'Registration successful',
-          user,
-          token: loginResponse.data.idToken,
-          refreshToken: loginResponse.data.refreshToken,
-          expiresIn: loginResponse.data.expiresIn
-        });
-      } catch (loginErr) {
-         console.warn('Auto-login after register failed.');
-      }
-    }
+		sendWelcomeEmail({ email: user.email, fullName: user.full_name }).catch(
+			err => console.error("[email] welcome:", err.message),
+		);
 
-    res.status(201).json({ message: 'Registration successful. Please login.', user });
-  } catch (error) {
-    console.error('Registration Error:', error.message || error);
+		// 3. Auto-login to get JWT token
+		const apiKey = process.env.FIREBASE_WEB_API_KEY;
+		if (apiKey) {
+			try {
+				const loginResponse = await axios.post(
+					`${FIREBASE_REST_API}/accounts:signInWithPassword?key=${apiKey}`,
+					{
+						email,
+						password,
+						returnSecureToken: true,
+					},
+				);
+				return res.status(201).json({
+					message: "Registration successful",
+					user,
+					token: loginResponse.data.idToken,
+					refreshToken: loginResponse.data.refreshToken,
+					expiresIn: loginResponse.data.expiresIn,
+				});
+			} catch (loginErr) {
+				console.warn("Auto-login after register failed.");
+			}
+		}
 
-    // Handle Firebase duplicate email error
-    if (error.code === 'auth/email-already-exists') {
-      return res.status(409).json({ error: 'This email address is already registered' });
-    }
-    if (error.code === 'auth/phone-number-already-exists') {
-      return res.status(409).json({ error: 'This phone number is already registered' });
-    }
+		res
+			.status(201)
+			.json({ message: "Registration successful. Please login.", user });
+	} catch (error) {
+		console.error("Registration Error:", error.message || error);
 
-    res.status(500).json({ error: 'Failed to complete registration', details: error.message });
-  }
+		// Handle Firebase duplicate email error
+		if (error.code === "auth/email-already-exists") {
+			return res
+				.status(409)
+				.json({ error: "This email address is already registered" });
+		}
+		if (error.code === "auth/phone-number-already-exists") {
+			return res
+				.status(409)
+				.json({ error: "This phone number is already registered" });
+		}
+
+		res
+			.status(500)
+			.json({
+				error: "Failed to complete registration",
+				details: error.message,
+			});
+	}
 });
 
 /**
@@ -205,86 +226,94 @@ router.post('/register', async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  const apiKey = process.env.FIREBASE_WEB_API_KEY;
+router.post("/login", async (req, res) => {
+	const { email, password } = req.body;
+	const apiKey = process.env.FIREBASE_WEB_API_KEY;
 
-  if (!apiKey) {
-    return res.status(500).json({ error: 'FIREBASE_WEB_API_KEY is not configured on the server' });
-  }
+	if (!apiKey) {
+		return res
+			.status(500)
+			.json({ error: "FIREBASE_WEB_API_KEY is not configured on the server" });
+	}
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
+	if (!email || !password) {
+		return res.status(400).json({ error: "Email and password are required" });
+	}
 
-  try {
-    // Authenticate with Firebase REST API
-    const response = await axios.post(
-      `${FIREBASE_REST_API}/accounts:signInWithPassword?key=${apiKey}`,
-      {
-        email,
-        password,
-        returnSecureToken: true
-      }
-    );
+	try {
+		// Authenticate with Firebase REST API
+		const response = await axios.post(
+			`${FIREBASE_REST_API}/accounts:signInWithPassword?key=${apiKey}`,
+			{
+				email,
+				password,
+				returnSecureToken: true,
+			},
+		);
 
-    const { idToken, refreshToken, expiresIn, localId, displayName } = response.data;
+		const { idToken, refreshToken, expiresIn, localId, displayName } =
+			response.data;
 
-    // Check if user exists in our DB
-    let { data: dbUser, error } = await supabaseAdmin
-      .from('users')
-      .select('id, status')
-      .eq('firebase_uid', localId)
-      .single();
+		// Check if user exists in our DB
+		let { data: dbUser, error } = await supabaseAdmin
+			.from("users")
+			.select("id, status")
+			.eq("firebase_uid", localId)
+			.single();
 
-    // Auto-provisioning if missing
-    if (error || !dbUser) {
-      console.log(`Auto-provisioning profile for Firebase UID: ${localId}`);
-      
-      // We'll fetch full Firebase details just in case we need the display name
-      let fullName = displayName || email.split('@')[0];
-      try {
-        const fbRecord = await admin.auth().getUser(localId);
-        if (fbRecord.displayName) fullName = fbRecord.displayName;
-      } catch(e) {
-        // ignore
-      }
+		// Auto-provisioning if missing
+		if (error || !dbUser) {
+			console.log(`Auto-provisioning profile for Firebase UID: ${localId}`);
 
-      const { data: newUser, error: insertError } = await supabaseAdmin
-        .from('users')
-        .insert({
-          firebase_uid: localId,
-          email: email,
-          full_name: fullName,
-          status: 'active'
-        })
-        .select('id, status')
-        .single();
-      
-      if (insertError) {
-         console.error('Failed to auto-provision user:', insertError);
-         return res.status(500).json({ error: 'Failed to create internal user profile' });
-      }
-      dbUser = newUser;
-    }
+			// We'll fetch full Firebase details just in case we need the display name
+			let fullName = displayName || email.split("@")[0];
+			try {
+				const fbRecord = await admin.auth().getUser(localId);
+				if (fbRecord.displayName) fullName = fbRecord.displayName;
+			} catch (e) {
+				// ignore
+			}
 
-    if (dbUser.status !== 'active') {
-      return res.status(403).json({ error: 'User account is not active' });
-    }
+			const { data: newUser, error: insertError } = await supabaseAdmin
+				.from("users")
+				.insert({
+					firebase_uid: localId,
+					email: email,
+					full_name: fullName,
+					status: "active",
+				})
+				.select("id, status")
+				.single();
 
-    res.status(200).json({
-      message: 'Login successful',
-      token: idToken,
-      refreshToken,
-      expiresIn
-    });
-  } catch (error) {
-    console.error('Login Error:', error.response?.data?.error?.message || error.message);
-    res.status(401).json({ 
-      error: 'Invalid credentials', 
-      details: error.response?.data?.error?.message 
-    });
-  }
+			if (insertError) {
+				console.error("Failed to auto-provision user:", insertError);
+				return res
+					.status(500)
+					.json({ error: "Failed to create internal user profile" });
+			}
+			dbUser = newUser;
+		}
+
+		if (dbUser.status !== "active") {
+			return res.status(403).json({ error: "User account is not active" });
+		}
+
+		res.status(200).json({
+			message: "Login successful",
+			token: idToken,
+			refreshToken,
+			expiresIn,
+		});
+	} catch (error) {
+		console.error(
+			"Login Error:",
+			error.response?.data?.error?.message || error.message,
+		);
+		res.status(401).json({
+			error: "Invalid credentials",
+			details: error.response?.data?.error?.message,
+		});
+	}
 });
 
 /**
@@ -460,133 +489,152 @@ router.post('/login', async (req, res) => {
  *                 details:
  *                   type: string
  */
-router.post('/business', requireAuth, async (req, res) => {
-  const { 
-    business_name, 
-    business_type, 
-    email, 
-    phone, 
-    address_line1, 
-    city, 
-    country 
-  } = req.body;
-  const user = req.user;
+router.post("/business", requireAuth, async (req, res) => {
+	const {
+		business_name,
+		business_type,
+		email,
+		phone,
+		address_line1,
+		city,
+		country,
+	} = req.body;
+	const user = req.user;
 
-  if (!business_name) {
-    return res.status(400).json({ error: 'business_name is required' });
-  }
+	if (!business_name) {
+		return res.status(400).json({ error: "business_name is required" });
+	}
 
-  try {
-    // 1. Check if user already owns a business
-    const { data: existingOwnership } = await supabaseAdmin
-      .from('tenant_members')
-      .select('id, tenants(name)')
-      .eq('user_id', user.id)
-      .eq('is_owner', true)
-      .eq('status', 'active')
-      .single();
+	try {
+		// 1. Check if user already owns a business
+		const { data: existingOwnership } = await supabaseAdmin
+			.from("tenant_members")
+			.select("id, tenants(name)")
+			.eq("user_id", user.id)
+			.eq("is_owner", true)
+			.eq("status", "active")
+			.single();
 
-    if (existingOwnership) {
-      return res.status(409).json({ 
-        error: 'You already own a business account',
-        business: existingOwnership.tenants?.name,
-        message: 'A user can only own one business. Please contact support to manage multiple businesses.'
-      });
-    }
+		if (existingOwnership) {
+			return res.status(409).json({
+				error: "You already own a business account",
+				business: existingOwnership.tenants?.name,
+				message:
+					"A user can only own one business. Please contact support to manage multiple businesses.",
+			});
+		}
 
-    // 2. Check if a business with the same name already exists (case-insensitive)
-    const { data: duplicateBusiness } = await supabaseAdmin
-      .from('tenants')
-      .select('id, name')
-      .ilike('name', business_name.trim())
-      .single();
+		// 2. Check if a business with the same name already exists (case-insensitive)
+		const { data: duplicateBusiness } = await supabaseAdmin
+			.from("tenants")
+			.select("id, name")
+			.ilike("name", business_name.trim())
+			.single();
 
-    if (duplicateBusiness) {
-      return res.status(409).json({ 
-        error: 'A business with this name already exists',
-        message: 'Please choose a different business name.'
-      });
-    }
+		if (duplicateBusiness) {
+			return res.status(409).json({
+				error: "A business with this name already exists",
+				message: "Please choose a different business name.",
+			});
+		}
 
-    // Generate a unique slug
-    const slug = business_name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Math.floor(Math.random() * 10000);
+		// Generate a unique slug
+		const slug =
+			business_name.toLowerCase().replace(/[^a-z0-9]+/g, "-") +
+			"-" +
+			Math.floor(Math.random() * 10000);
 
-    // 3. Create Tenant using creator profile details as fallback
-    const { data: tenant, error: tenantError } = await supabaseAdmin
-      .from('tenants')
-      .insert({
-        name: business_name.trim(),
-        slug: slug,
-        email: email || user.email,
-        business_type: business_type || 'sole_proprietor',
-        phone: phone || null,
-        address_line1: address_line1 || null,
-        city: city || null,
-        country: country || 'Malawi',
-        balance_mwk: 0.00
-      })
-      .select()
-      .single();
+		// 3. Create Tenant using creator profile details as fallback
+		const { data: tenant, error: tenantError } = await supabaseAdmin
+			.from("tenants")
+			.insert({
+				name: business_name.trim(),
+				slug: slug,
+				email: email || user.email,
+				business_type: business_type || "sole_proprietor",
+				phone: phone || null,
+				address_line1: address_line1 || null,
+				city: city || null,
+				country: country || "Malawi",
+				balance_mwk: 0.0,
+			})
+			.select()
+			.single();
 
-    if (tenantError) throw tenantError;
+		if (tenantError) throw tenantError;
 
-    // 4. Get 'admin' role
-    const { data: role } = await supabaseAdmin
-      .from('roles')
-      .select('id')
-      .eq('name', 'admin')
-      .single();
+		// 4. Get 'admin' role
+		const { data: role } = await supabaseAdmin
+			.from("roles")
+			.select("id")
+			.eq("name", "admin")
+			.single();
 
-    if (!role) {
-      throw new Error("Admin role not found in database.");
-    }
+		if (!role) {
+			throw new Error("Admin role not found in database.");
+		}
 
-    // 5. Create Tenant Member - creator as owner
-    const { data: membership, error: memberError } = await supabaseAdmin
-      .from('tenant_members')
-      .insert({
-        tenant_id: tenant.id,
-        user_id: user.id,
-        role_id: role.id,
-        is_owner: true,
-        invite_accepted: true,
-        status: 'active'
-      })
-      .select()
-      .single();
-    
-    if (memberError) throw memberError;
+		// 5. Create Tenant Member - creator as owner
+		const { data: membership, error: memberError } = await supabaseAdmin
+			.from("tenant_members")
+			.insert({
+				tenant_id: tenant.id,
+				user_id: user.id,
+				role_id: role.id,
+				is_owner: true,
+				invite_accepted: true,
+				status: "active",
+			})
+			.select()
+			.single();
 
-    // 6. Grant signup bonus — never blocks the response; logged on failure
-    const { data: bonusResult, error: bonusError } = await supabaseAdmin.rpc('grant_signup_bonus', {
-      p_tenant_id: tenant.id,
-    });
+		if (memberError) throw memberError;
 
-    if (bonusError) {
-      console.error('[signup bonus] Failed to grant bonus for tenant', tenant.id, bonusError.message);
-    }
+		// 6. Grant signup bonus — never blocks the response; logged on failure
+		const { data: bonusResult, error: bonusError } = await supabaseAdmin.rpc(
+			"grant_signup_bonus",
+			{
+				p_tenant_id: tenant.id,
+			},
+		);
 
-    const bonus = bonusResult?.[0] ?? null;
+		if (bonusError) {
+			console.error(
+				"[signup bonus] Failed to grant bonus for tenant",
+				tenant.id,
+				bonusError.message,
+			);
+		}
 
-    sendBusinessCreatedEmail({ email: user.email, fullName: user.full_name, businessName: tenant.name, smsBonusCredits: 10, waBonusCredits: 10 })
-      .catch(err => console.error('[email] businessCreated:', err.message));
+		const bonus = bonusResult?.[0] ?? null;
 
-    res.status(201).json({
-      message: 'Business created successfully',
-      tenant,
-      membership,
-      signup_bonus: {
-        sms_credits_granted: 10,
-        whatsapp_credits_granted: 10,
-        sms_credits_balance: bonus?.sms_credits ?? 10,
-        whatsapp_credits_balance: bonus?.whatsapp_credits ?? 10,
-        message: 'Welcome! You received 10 free SMS credits and 10 free WhatsApp credits to get started.',
-      },
-    });
-  } catch (error) {
-    console.error('Business Creation Error:', error);
-    res.status(500).json({ error: 'Failed to create business', details: error.message });
-  }
+		sendBusinessCreatedEmail({
+			email: user.email,
+			fullName: user.full_name,
+			businessName: tenant.name,
+			smsBonusCredits: 10,
+			waBonusCredits: 10,
+		}).catch(err => console.error("[email] businessCreated:", err.message));
+
+		res.status(201).json({
+			message: "Business created successfully",
+			tenant,
+			membership,
+			signup_bonus: {
+				sms_credits_granted: 10,
+				whatsapp_credits_granted: 10,
+				sms_credits_balance: bonus?.sms_credits ?? 10,
+				whatsapp_credits_balance: bonus?.whatsapp_credits ?? 10,
+				message:
+					"Welcome! You received 10 free SMS credits and 10 free WhatsApp credits to get started.",
+			},
+		});
+	} catch (error) {
+		console.error("Business Creation Error:", error);
+		res
+			.status(500)
+			.json({ error: "Failed to create business", details: error.message });
+	}
 });
 
 /**
@@ -608,26 +656,28 @@ router.post('/business', requireAuth, async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.get('/me', requireAuth, async (req, res) => {
-  const user = req.user;
+router.get("/me", requireAuth, async (req, res) => {
+	const user = req.user;
 
-  try {
-    const { data: memberships, error } = await supabaseAdmin
-      .from('tenant_members')
-      .select('tenant_id, is_owner, role_id, status, invite_accepted, tenants(*), roles(name)')
-      .eq('user_id', user.id)
-      .eq('status', 'active')
-      .or('invite_accepted.eq.true,is_owner.eq.true');
+	try {
+		const { data: memberships, error } = await supabaseAdmin
+			.from("tenant_members")
+			.select(
+				"tenant_id, is_owner, role_id, status, invite_accepted, tenants(*), roles(name)",
+			)
+			.eq("user_id", user.id)
+			.eq("status", "active")
+			.or("invite_accepted.eq.true,is_owner.eq.true");
 
-    if (error) throw error;
+		if (error) throw error;
 
-    res.status(200).json({
-      user,
-      memberships
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch user details' });
-  }
+		res.status(200).json({
+			user,
+			memberships,
+		});
+	} catch (error) {
+		res.status(500).json({ error: "Failed to fetch user details" });
+	}
 });
 
 module.exports = router;
