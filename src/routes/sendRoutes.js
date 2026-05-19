@@ -5,6 +5,7 @@ const { apiKeyAuth } = require('../middlewares/apiKeyAuth');
 const { rateLimit } = require('../middlewares/rateLimit');
 const { requireScope } = require('../middlewares/requireScope');
 const { queueSMS } = require('../services/smsService');
+const { sendWhatsAppMessage, deductWhatsAppCredits } = require('../services/whatsappService');
 const { normalizePhone, isValidMalawiPhone } = require('../utils/numberResolver');
 
 const router = Router();
@@ -258,5 +259,304 @@ router.post('/sms', apiKeyAuth, rateLimit, requireScope('sms:send'), async (req,
     ...(isTest && { test_mode: true, note: 'No credits deducted — test environment' })
   });
 });
+
+/**
+ * @swagger
+ * /api/v1/send/whatsapp:
+ *   post:
+ *     summary: Send WhatsApp messages
+ *     description: |
+ *       Sends a WhatsApp message to one or more Malawi phone numbers via the tenant's connected
+ *       WhatsApp number. The API key must have the `whatsapp:send` scope.
+ *
+ *       WhatsApp credits are deducted atomically (1 credit per recipient).
+ *       The tenant must have an active connected WhatsApp session — use the
+ *       `POST /api/v1/whatsapp/sessions` endpoint to connect a number.
+ *
+ *       Recipients are normalised to `265XXXXXXXXX` format.
+ *     tags:
+ *       - Messaging
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - recipients
+ *               - message
+ *             properties:
+ *               recipients:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: List of Malawi phone numbers (any local format accepted)
+ *                 example: ["265991234567", "0881234567"]
+ *               message:
+ *                 type: string
+ *                 description: Message content
+ *                 example: Hello from Tumasend!
+ *     responses:
+ *       200:
+ *         description: Batch accepted and sending in progress
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 batch_id:
+ *                   type: string
+ *                   format: uuid
+ *                 environment:
+ *                   type: string
+ *                   enum: [live, test]
+ *                 total_recipients:
+ *                   type: integer
+ *                   example: 3
+ *                 invalid_recipients:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Numbers that failed normalisation (omitted if none)
+ *                 whatsapp_credits_remaining:
+ *                   type: integer
+ *                   nullable: true
+ *                   description: Remaining WhatsApp credits after deduction (null in test mode)
+ *                   example: 247
+ *                 status:
+ *                   type: string
+ *                   example: processing
+ *                 test_mode:
+ *                   type: boolean
+ *                   description: Present and true when using a test-environment API key
+ *                 note:
+ *                   type: string
+ *                   description: Human-readable note (only present in test mode)
+ *                   example: No credits deducted — test environment
+ *       400:
+ *         description: Invalid request — missing fields or no valid Malawi recipients
+ *       402:
+ *         description: Insufficient WhatsApp credits
+ *       401:
+ *         description: Invalid or missing API key
+ *       403:
+ *         description: API key does not have the whatsapp:send scope
+ *       503:
+ *         description: WhatsApp session not connected for this tenant
+ */
+router.post('/whatsapp', apiKeyAuth, rateLimit, requireScope('whatsapp:send'), async (req, res) => {
+  const { recipients, message } = req.body;
+  const { tenantId, apiKeyId, environment } = req.apiKey;
+  const isTest = environment === 'test';
+
+  if (!message || message.trim().length === 0) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(400).json({ error: 'recipients must be a non-empty array' });
+  }
+
+  const normalizedRecipients = [];
+  const invalidRecipients = [];
+
+  for (const recipient of recipients) {
+    const phone = normalizePhone(String(recipient));
+    if (isValidMalawiPhone(phone)) {
+      normalizedRecipients.push(phone);
+    } else {
+      invalidRecipients.push(String(recipient));
+    }
+  }
+
+  if (normalizedRecipients.length === 0) {
+    return res.status(400).json({
+      error: 'No valid Malawi recipients',
+      invalid_recipients: invalidRecipients,
+    });
+  }
+
+  const numMessages = normalizedRecipients.length;
+
+  // Verify session is ready before creating the batch
+  if (!isTest) {
+    const { data: session } = await supabaseAdmin
+      .from('whatsapp_sessions')
+      .select('status')
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (!session || session.status !== 'ready') {
+      return res.status(503).json({
+        error: 'WhatsApp session not connected',
+        hint: 'Connect a WhatsApp number via the dashboard before sending messages',
+        session_status: session?.status || 'none',
+      });
+    }
+  }
+
+  // Check WhatsApp credits (test keys skip this)
+  if (!isTest) {
+    const { data: tenant } = await supabaseAdmin
+      .from('tenants')
+      .select('whatsapp_credits')
+      .eq('id', tenantId)
+      .single();
+
+    if (!tenant || tenant.whatsapp_credits < numMessages) {
+      return res.status(402).json({
+        error: 'Insufficient WhatsApp credits',
+        required: numMessages,
+        available: tenant?.whatsapp_credits || 0,
+      });
+    }
+  }
+
+  const batchId = uuidv4();
+  const requestId = uuidv4();
+
+  const { error: batchError } = await supabaseAdmin
+    .from('message_batches')
+    .insert({
+      id: batchId,
+      tenant_id: tenantId,
+      api_key_id: apiKeyId,
+      channel: 'whatsapp',
+      content: message,
+      total_recipients: numMessages,
+      cost_per_message_mwk: 0,
+      total_cost_mwk: 0,
+      status: 'processing',
+      request_ip: req.ip,
+      request_user_agent: req.headers['user-agent'],
+      request_id: requestId,
+      processing_started_at: new Date().toISOString(),
+    });
+
+  if (batchError) {
+    console.error('[WhatsApp] Batch insert error:', JSON.stringify(batchError));
+    return res.status(500).json({ error: 'Failed to create batch' });
+  }
+
+  if (!isTest) {
+    const deducted = await deductWhatsAppCredits(tenantId, numMessages, batchId).catch(err => {
+      console.error('[WhatsApp] Credit deduction error:', err.message);
+      return false;
+    });
+
+    if (!deducted) {
+      await supabaseAdmin
+        .from('message_batches')
+        .update({ status: 'failed' })
+        .eq('id', batchId);
+      return res.status(402).json({ error: 'Failed to deduct WhatsApp credits' });
+    }
+  }
+
+  const { error: messagesError } = await supabaseAdmin
+    .from('messages')
+    .insert(normalizedRecipients.map(recipient => ({
+      tenant_id: tenantId,
+      batch_id: batchId,
+      channel: 'whatsapp',
+      recipient,
+      status: 'queued',
+      cost_mwk: 0,
+    })));
+
+  if (messagesError) {
+    console.error('[WhatsApp] Messages insert error:', JSON.stringify(messagesError));
+    return res.status(500).json({ error: 'Failed to create messages' });
+  }
+
+  // Send messages in the background — response is returned immediately
+  sendWhatsAppBatch(tenantId, batchId, normalizedRecipients, message, isTest);
+
+  let whatsappCreditsRemaining = null;
+  if (!isTest) {
+    const { data: updatedTenant } = await supabaseAdmin
+      .from('tenants')
+      .select('whatsapp_credits')
+      .eq('id', tenantId)
+      .single();
+    whatsappCreditsRemaining = updatedTenant?.whatsapp_credits ?? null;
+  }
+
+  return res.status(200).json({
+    success: true,
+    batch_id: batchId,
+    environment,
+    total_recipients: numMessages,
+    invalid_recipients: invalidRecipients.length > 0 ? invalidRecipients : undefined,
+    whatsapp_credits_remaining: whatsappCreditsRemaining,
+    status: 'processing',
+    ...(isTest && { test_mode: true, note: 'No credits deducted — test environment' }),
+  });
+});
+
+/**
+ * Fire-and-forget: send each message in the batch concurrently (max 5 at a time).
+ */
+async function sendWhatsAppBatch(tenantId, batchId, recipients, content, isTest) {
+  if (isTest) {
+    // In test mode just mark everything as sent without using the real client
+    await supabaseAdmin
+      .from('messages')
+      .update({ status: 'sent', provider: 'wwebjs_test', sent_at: new Date().toISOString() })
+      .eq('batch_id', batchId);
+
+    await supabaseAdmin
+      .from('message_batches')
+      .update({ status: 'completed', total_sent: recipients.length, completed_at: new Date().toISOString() })
+      .eq('id', batchId);
+    return;
+  }
+
+  const { data: messageRows } = await supabaseAdmin
+    .from('messages')
+    .select('id, recipient')
+    .eq('batch_id', batchId)
+    .eq('status', 'queued');
+
+  if (!messageRows || messageRows.length === 0) return;
+
+  const CONCURRENCY = 5;
+  let sentCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < messageRows.length; i += CONCURRENCY) {
+    const chunk = messageRows.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map(row => sendWhatsAppMessage(tenantId, row.id, row.recipient, content))
+    );
+
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.ok) {
+        sentCount++;
+      } else {
+        failedCount++;
+      }
+    }
+  }
+
+  const total = messageRows.length;
+  const finalStatus =
+    failedCount === total ? 'failed' : failedCount > 0 ? 'partial' : 'completed';
+
+  await supabaseAdmin
+    .from('message_batches')
+    .update({
+      total_sent: sentCount,
+      total_failed: failedCount,
+      status: finalStatus,
+      completed_at: new Date().toISOString(),
+    })
+    .eq('id', batchId);
+}
 
 module.exports = router;

@@ -7,6 +7,7 @@ services:
       NODE_ENV: development
       OTEL_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
+      REDIS_URL: "redis://redis:6379"
     # Mount source live so changes reflect without rebuilding
     volumes:
       - ./src:/app/src:ro
@@ -16,6 +17,7 @@ services:
       - "3000:3000"
     depends_on:
       - jaeger
+      - redis
 
   kannel:
     # Expose admin port locally for debugging (bearerbox status)
@@ -31,3 +33,8 @@ services:
       - "4318:4318"     # OTLP HTTP receiver
     networks:
       - internal
+
+  redis:
+    # Expose Redis locally so you can inspect the cache with redis-cli
+    ports:
+      - "127.0.0.1:6379:6379"

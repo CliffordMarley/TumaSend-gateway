@@ -1,26 +1,34 @@
-const admin = require('firebase-admin');
-require('dotenv').config();
+const admin = require("firebase-admin");
+require("dotenv").config();
 
-try {
-  // Assuming FIREBASE_SERVICE_ACCOUNT is either a path to a json file or a base64 encoded JSON string
-  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT;
-  
-  if (serviceAccountPath) {
-    let serviceAccount;
-    if (serviceAccountPath.startsWith('{')) {
-       serviceAccount = JSON.parse(serviceAccountPath);
-    } else {
-       serviceAccount = require(serviceAccountPath);
-    }
+const serviceAccountValue = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  } else {
-    console.warn('Firebase Service Account is missing. Check your .env file.');
-  }
-} catch (error) {
-  console.error('Failed to initialize Firebase Admin:', error.message);
+if (!serviceAccountValue) {
+	throw new Error(
+		"FIREBASE_SERVICE_ACCOUNT is not set. Add it to your .env file as a path to the service account JSON or as an inline JSON string.",
+	);
 }
+
+let serviceAccount;
+try {
+	if (serviceAccountValue.startsWith("{")) {
+		serviceAccount = JSON.parse(serviceAccountValue);
+	} else {
+		// Treat as a file path
+		const path = require("path");
+		const fs = require("fs");
+		const resolved = path.resolve(serviceAccountValue);
+		if (!fs.existsSync(resolved)) {
+			throw new Error(`Service account file not found: ${resolved}`);
+		}
+		serviceAccount = JSON.parse(fs.readFileSync(resolved, "utf8"));
+	}
+} catch (error) {
+	throw new Error(`Failed to load Firebase service account: ${error.message}`);
+}
+
+admin.initializeApp({
+	credential: admin.credential.cert(serviceAccount),
+});
 
 module.exports = admin;

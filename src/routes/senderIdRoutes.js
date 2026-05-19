@@ -1,31 +1,38 @@
-const { Router } = require('express');
-const { requireAuth } = require('../middlewares/authMiddleware');
-const { supabaseAdmin } = require('../config/supabase');
+const { Router } = require("express");
+const { requireAuth } = require("../middlewares/authMiddleware");
+const { supabaseAdmin } = require("../config/supabase");
+const { cacheGet, cacheSet } = require("../utils/cache");
+
+// Global sender IDs don't change often — cache for 10 minutes
+const GLOBAL_SENDER_IDS_KEY = "senderids:global";
+const GLOBAL_SENDER_IDS_TTL = 600;
 
 const router = Router();
 
 async function requireVerifiedTenant(req, res, next) {
-  const { data, error } = await supabaseAdmin
-    .from('tenant_members')
-    .select('tenant_id, tenants(id, name, kyc_status, whitelist_agreement_signed_at)')
-    .eq('user_id', req.user.id)
-    .eq('is_owner', true)
-    .eq('status', 'active')
-    .single();
+	const { data, error } = await supabaseAdmin
+		.from("tenant_members")
+		.select(
+			"tenant_id, tenants(id, name, kyc_status, whitelist_agreement_signed_at)",
+		)
+		.eq("user_id", req.user.id)
+		.eq("is_owner", true)
+		.eq("status", "active")
+		.single();
 
-  if (error || !data) {
-    return res.status(403).json({ error: 'No business account found' });
-  }
+	if (error || !data) {
+		return res.status(403).json({ error: "No business account found" });
+	}
 
-  if (data.tenants.kyc_status !== 'approved') {
-    return res.status(403).json({
-      error: 'KYC must be fully approved before using sender IDs',
-      kyc_status: data.tenants.kyc_status
-    });
-  }
+	if (data.tenants.kyc_status !== "approved") {
+		return res.status(403).json({
+			error: "KYC must be fully approved before using sender IDs",
+			kyc_status: data.tenants.kyc_status,
+		});
+	}
 
-  req.ownedTenant = data;
-  next();
+	req.ownedTenant = data;
+	next();
 }
 
 // ─────────────────────────────────────────────
@@ -51,20 +58,27 @@ async function requireVerifiedTenant(req, res, next) {
  *       403:
  *         description: KYC not approved
  */
-router.get('/global', requireAuth, requireVerifiedTenant, async (req, res) => {
-  const { data: senderIds, error } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, display_name, description, channels, valid_from, valid_until')
-    .eq('is_global', true)
-    .eq('status', 'approved')
-    .order('sender_id');
+router.get("/global", requireAuth, requireVerifiedTenant, async (req, res) => {
+	// ── Cache hit ──────────────────────────────────────────────────────────
+	const cached = await cacheGet(GLOBAL_SENDER_IDS_KEY);
+	if (cached) return res.json({ sender_ids: cached });
 
-  if (error) {
-    console.error('Global sender IDs error:', error);
-    return res.status(500).json({ error: 'Failed to load global sender IDs' });
-  }
+	const { data: senderIds, error } = await supabaseAdmin
+		.from("sender_ids")
+		.select(
+			"id, sender_id, display_name, description, channels, valid_from, valid_until",
+		)
+		.eq("is_global", true)
+		.eq("status", "approved")
+		.order("sender_id");
 
-  return res.json({ sender_ids: senderIds || [] });
+	if (error) {
+		console.error("Global sender IDs error:", error);
+		return res.status(500).json({ error: "Failed to load global sender IDs" });
+	}
+
+	cacheSet(GLOBAL_SENDER_IDS_KEY, senderIds || [], GLOBAL_SENDER_IDS_TTL);
+	return res.json({ sender_ids: senderIds || [] });
 });
 
 // ─────────────────────────────────────────────
@@ -87,20 +101,22 @@ router.get('/global', requireAuth, requireVerifiedTenant, async (req, res) => {
  *       403:
  *         description: KYC not approved
  */
-router.get('/', requireAuth, requireVerifiedTenant, async (req, res) => {
-  const { data: senderIds, error } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, display_name, description, channels, status, rejection_reason, requested_at, approved_at, valid_from, valid_until, created_at, updated_at')
-    .eq('tenant_id', req.ownedTenant.tenant_id)
-    .eq('is_global', false)
-    .order('created_at', { ascending: false });
+router.get("/", requireAuth, requireVerifiedTenant, async (req, res) => {
+	const { data: senderIds, error } = await supabaseAdmin
+		.from("sender_ids")
+		.select(
+			"id, sender_id, display_name, description, channels, status, rejection_reason, requested_at, approved_at, valid_from, valid_until, created_at, updated_at",
+		)
+		.eq("tenant_id", req.ownedTenant.tenant_id)
+		.eq("is_global", false)
+		.order("created_at", { ascending: false });
 
-  if (error) {
-    console.error('List sender IDs error:', error);
-    return res.status(500).json({ error: 'Failed to load sender IDs' });
-  }
+	if (error) {
+		console.error("List sender IDs error:", error);
+		return res.status(500).json({ error: "Failed to load sender IDs" });
+	}
 
-  return res.json({ sender_ids: senderIds || [] });
+	return res.json({ sender_ids: senderIds || [] });
 });
 
 // ─────────────────────────────────────────────
@@ -159,80 +175,93 @@ router.get('/', requireAuth, requireVerifiedTenant, async (req, res) => {
  *       403:
  *         description: KYC not approved
  */
-router.post('/', requireAuth, requireVerifiedTenant, async (req, res) => {
-  const tenantId = req.ownedTenant.tenant_id;
-  const body = req.body || {};
-  const { sender_id, display_name, description, agreement_document_url } = body;
+router.post("/", requireAuth, requireVerifiedTenant, async (req, res) => {
+	const tenantId = req.ownedTenant.tenant_id;
+	const body = req.body || {};
+	const { sender_id, display_name, description, agreement_document_url } = body;
 
-  if (!sender_id || !display_name) {
-    return res.status(400).json({ error: 'sender_id and display_name are required' });
-  }
+	if (!sender_id || !display_name) {
+		return res
+			.status(400)
+			.json({ error: "sender_id and display_name are required" });
+	}
 
-  const normalized = String(sender_id).toUpperCase().trim();
-  if (!/^[A-Z0-9]{3,11}$/.test(normalized)) {
-    return res.status(400).json({
-      error: 'sender_id must be 3-11 alphanumeric characters (letters and numbers only, no spaces)',
-      example: 'MYSHOP'
-    });
-  }
+	const normalized = String(sender_id).toUpperCase().trim();
+	if (!/^[A-Z0-9]{3,11}$/.test(normalized)) {
+		return res.status(400).json({
+			error:
+				"sender_id must be 3-11 alphanumeric characters (letters and numbers only, no spaces)",
+			example: "MYSHOP",
+		});
+	}
 
-  // Block if a non-rejected request already exists for this tenant + sender_id
-  const { data: existing } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, status')
-    .eq('tenant_id', tenantId)
-    .eq('sender_id', normalized)
-    .neq('status', 'rejected')
-    .maybeSingle();
+	// Block if a non-rejected request already exists for this tenant + sender_id
+	const { data: existing } = await supabaseAdmin
+		.from("sender_ids")
+		.select("id, status")
+		.eq("tenant_id", tenantId)
+		.eq("sender_id", normalized)
+		.neq("status", "rejected")
+		.maybeSingle();
 
-  if (existing) {
-    return res.status(409).json({
-      error: `A sender ID request for "${normalized}" already exists`,
-      status: existing.status,
-      id: existing.id
-    });
-  }
+	if (existing) {
+		return res.status(409).json({
+			error: `A sender ID request for "${normalized}" already exists`,
+			status: existing.status,
+			id: existing.id,
+		});
+	}
 
-  // Save whitelist agreement on the tenant if provided and not already recorded
-  if (agreement_document_url && !req.ownedTenant.tenants.whitelist_agreement_signed_at) {
-    try { new URL(agreement_document_url); } catch {
-      return res.status(400).json({ error: 'agreement_document_url must be a valid URL' });
-    }
-    await supabaseAdmin
-      .from('tenants')
-      .update({
-        whitelist_agreement_signed_at: new Date().toISOString(),
-        whitelist_agreement_document_url: agreement_document_url
-      })
-      .eq('id', tenantId);
-  }
+	// Save whitelist agreement on the tenant if provided and not already recorded
+	if (
+		agreement_document_url &&
+		!req.ownedTenant.tenants.whitelist_agreement_signed_at
+	) {
+		try {
+			new URL(agreement_document_url);
+		} catch {
+			return res
+				.status(400)
+				.json({ error: "agreement_document_url must be a valid URL" });
+		}
+		await supabaseAdmin
+			.from("tenants")
+			.update({
+				whitelist_agreement_signed_at: new Date().toISOString(),
+				whitelist_agreement_document_url: agreement_document_url,
+			})
+			.eq("id", tenantId);
+	}
 
-  const { data: newSenderId, error } = await supabaseAdmin
-    .from('sender_ids')
-    .insert({
-      tenant_id: tenantId,
-      sender_id: normalized,
-      display_name: display_name.trim(),
-      description: description ? description.trim() : null,
-      is_global: false,
-      is_system: false,
-      status: 'pending',
-      channels: ['sms'],
-      requested_by: req.user.id,
-      requested_at: new Date().toISOString()
-    })
-    .select()
-    .single();
+	const { data: newSenderId, error } = await supabaseAdmin
+		.from("sender_ids")
+		.insert({
+			tenant_id: tenantId,
+			sender_id: normalized,
+			display_name: display_name.trim(),
+			description: description ? description.trim() : null,
+			is_global: false,
+			is_system: false,
+			status: "pending",
+			channels: ["sms"],
+			requested_by: req.user.id,
+			requested_at: new Date().toISOString(),
+		})
+		.select()
+		.single();
 
-  if (error) {
-    console.error('Sender ID request error:', error);
-    return res.status(500).json({ error: 'Failed to submit sender ID request' });
-  }
+	if (error) {
+		console.error("Sender ID request error:", error);
+		return res
+			.status(500)
+			.json({ error: "Failed to submit sender ID request" });
+	}
 
-  return res.status(201).json({
-    message: 'Sender ID request submitted. Approval typically takes 48 working hours.',
-    sender_id: newSenderId
-  });
+	return res.status(201).json({
+		message:
+			"Sender ID request submitted. Approval typically takes 48 working hours.",
+		sender_id: newSenderId,
+	});
 });
 
 // ─────────────────────────────────────────────
@@ -260,19 +289,21 @@ router.post('/', requireAuth, requireVerifiedTenant, async (req, res) => {
  *       404:
  *         description: Not found
  */
-router.get('/:id', requireAuth, requireVerifiedTenant, async (req, res) => {
-  const { data: senderId, error } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, sender_id, display_name, description, channels, status, rejection_reason, requested_at, approved_at, valid_from, valid_until, created_at, updated_at')
-    .eq('id', req.params.id)
-    .eq('tenant_id', req.ownedTenant.tenant_id)
-    .single();
+router.get("/:id", requireAuth, requireVerifiedTenant, async (req, res) => {
+	const { data: senderId, error } = await supabaseAdmin
+		.from("sender_ids")
+		.select(
+			"id, sender_id, display_name, description, channels, status, rejection_reason, requested_at, approved_at, valid_from, valid_until, created_at, updated_at",
+		)
+		.eq("id", req.params.id)
+		.eq("tenant_id", req.ownedTenant.tenant_id)
+		.single();
 
-  if (error || !senderId) {
-    return res.status(404).json({ error: 'Sender ID not found' });
-  }
+	if (error || !senderId) {
+		return res.status(404).json({ error: "Sender ID not found" });
+	}
 
-  return res.json({ sender_id: senderId });
+	return res.json({ sender_id: senderId });
 });
 
 // ─────────────────────────────────────────────
@@ -303,38 +334,42 @@ router.get('/:id', requireAuth, requireVerifiedTenant, async (req, res) => {
  *       404:
  *         description: Not found
  */
-router.delete('/:id', requireAuth, requireVerifiedTenant, async (req, res) => {
-  const { data: existing, error: fetchError } = await supabaseAdmin
-    .from('sender_ids')
-    .select('id, status, is_system')
-    .eq('id', req.params.id)
-    .eq('tenant_id', req.ownedTenant.tenant_id)
-    .single();
+router.delete("/:id", requireAuth, requireVerifiedTenant, async (req, res) => {
+	const { data: existing, error: fetchError } = await supabaseAdmin
+		.from("sender_ids")
+		.select("id, status, is_system")
+		.eq("id", req.params.id)
+		.eq("tenant_id", req.ownedTenant.tenant_id)
+		.single();
 
-  if (fetchError || !existing) {
-    return res.status(404).json({ error: 'Sender ID not found' });
-  }
+	if (fetchError || !existing) {
+		return res.status(404).json({ error: "Sender ID not found" });
+	}
 
-  if (existing.is_system) {
-    return res.status(403).json({ error: 'System sender IDs cannot be deleted' });
-  }
+	if (existing.is_system) {
+		return res
+			.status(403)
+			.json({ error: "System sender IDs cannot be deleted" });
+	}
 
-  if (existing.status !== 'pending') {
-    return res.status(400).json({
-      error: `Only pending requests can be cancelled. Current status: ${existing.status}`
-    });
-  }
+	if (existing.status !== "pending") {
+		return res.status(400).json({
+			error: `Only pending requests can be cancelled. Current status: ${existing.status}`,
+		});
+	}
 
-  const { error } = await supabaseAdmin
-    .from('sender_ids')
-    .delete()
-    .eq('id', req.params.id);
+	const { error } = await supabaseAdmin
+		.from("sender_ids")
+		.delete()
+		.eq("id", req.params.id);
 
-  if (error) {
-    return res.status(500).json({ error: 'Failed to cancel sender ID request' });
-  }
+	if (error) {
+		return res
+			.status(500)
+			.json({ error: "Failed to cancel sender ID request" });
+	}
 
-  return res.json({ message: 'Sender ID request cancelled successfully' });
+	return res.json({ message: "Sender ID request cancelled successfully" });
 });
 
 module.exports = router;
